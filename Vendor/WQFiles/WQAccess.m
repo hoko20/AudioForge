@@ -50,6 +50,10 @@
 
 static NSMutableString *gLog;
 static NSLock *gLogLock;
+// Local change: the log is also the UI's diagnostics text. Keeping it bounded
+// prevents a long session (every scan / directory access logs a line) from
+// growing without limit and choking the log viewer.
+static const NSUInteger WQLogLimit = 256 * 1024;
 
 void wq_log(NSString *format, ...)
 {
@@ -62,6 +66,12 @@ void wq_log(NSString *format, ...)
     NSLog(@"[wqfiles] %@", line);
     [gLogLock lock];
     [gLog appendFormat:@"%@\n", line];
+    if (gLog.length > WQLogLimit) {
+        NSUInteger cut = gLog.length - WQLogLimit;
+        NSRange newline = [gLog rangeOfString:@"\n" options:0 range:NSMakeRange(cut, gLog.length - cut)];
+        if (newline.location != NSNotFound) cut = newline.location + newline.length;
+        [gLog deleteCharactersInRange:NSMakeRange(0, cut)];
+    }
     [gLogLock unlock];
 }
 

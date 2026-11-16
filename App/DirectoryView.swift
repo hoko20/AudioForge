@@ -617,26 +617,44 @@ struct DiagnosticsView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                Text(text.isEmpty ? "暂无日志" : text)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(Palette.ink)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-                    .padding(18)
-            }
-            .background(Palette.background)
-            .navigationTitle("访问日志")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("关闭") { dismiss() }.foregroundStyle(Palette.ink)
+            LogTextView(text: text.isEmpty ? "暂无日志" : text)
+                .background(Palette.background)
+                .navigationTitle("访问日志")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("关闭") { dismiss() }.foregroundStyle(Palette.ink)
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("复制") { UIPasteboard.general.string = text }
+                            .foregroundStyle(Palette.ink)
+                    }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button("复制") { UIPasteboard.general.string = text }
-                        .foregroundStyle(Palette.ink)
-                }
-            }
         }
+    }
+}
+
+// 长日志交给 UITextView：TextKit 直接负责排版和选择，避免 SwiftUI 的 Text
+// 加上 textSelection 在几万行日志上排版造成的卡死。
+private struct LogTextView: UIViewRepresentable {
+    let text: String
+
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView()
+        view.isEditable = false
+        view.isSelectable = true
+        view.backgroundColor = .clear
+        view.alwaysBounceVertical = true
+        view.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        view.textColor = UIColor(Palette.ink)
+        view.textContainerInset = UIEdgeInsets(top: 16, left: 14, bottom: 28, right: 14)
+        view.textContainer.lineFragmentPadding = 0
+        view.dataDetectorTypes = []
+        view.text = text
+        return view
+    }
+
+    func updateUIView(_ view: UITextView, context: Context) {
+        if view.text != text { view.text = text }
     }
 }
