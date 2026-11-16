@@ -1,0 +1,82 @@
+name: Build WQtool IPA
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # macos-26 镜像自带 Xcode 26（iOS 26 SDK），最低支持 iOS 26 必须用它
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode with an iOS 26+ SDK
+        run: |
+          set -euo pipefail
+          BEST=""; BESTVER=""
+          for app in /Applications/Xcode_*.app; do
+            [ -d "$app" ] || continue
+            dev="$app/Contents/Developer"
+            v=$(DEVELOPER_DIR="$dev" xcrun --sdk iphoneos --show-sdk-version 2>/dev/null || echo "0")
+            major=${v%%.*}
+            echo "$app -> iOS SDK $v"
+            if [[ "$major" =~ ^[0-9]+$ ]] && [ "$major" -ge 26 ]; then
+              BEST="$dev"; BESTVER="$v"
+            fi
+          done
+          if [ -z "$BEST" ]; then
+            echo "::error::No iOS 26+ SDK on this runner. Use the macos-26 image."
+            exit 1
+          fi
+          echo "DEVELOPER_DIR=$BEST" >> "$GITHUB_ENV"
+          echo "SDK_VERSION=$BESTVER" >> "$GITHUB_ENV"
+          echo "DEPLOYMENT_TARGET=26.0" >> "$GITHUB_ENV"
+          echo "Selected $BEST (iOS SDK $BESTVER), deployment target 26.0"
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          echo "SDK: $(xcrun --sdk iphoneos --show-sdk-path)"
+          echo "SDK version: $(xcrun --sdk iphoneos --show-sdk-version)"
+          echo "Deployment target: ${DEPLOYMENT_TARGET:-26.0}"
+
+      - name: Install XcodeGen
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            HOMEBREW_NO_AUTO_UPDATE=1 brew install xcodegen
+          fi
+          xcodegen --version
+
+      - name: Generate Xcode project
+        run: xcodegen generate --spec project.yml
+
+      - name: Show effective build settings
+        run: |
+          xcodebuild -project WQtool.xcodeproj -target WQtool -showBuildSettings \
+            | grep -E 'INFOPLIST_FILE|GENERATE_INFOPLIST_FILE|PRODUCT_BUNDLE_IDENTIFIER|CODE_SIGN_ENTITLEMENTS|IPHONEOS_DEPLOYMENT_TARGET|SWIFT_OBJC_BRIDGING_HEADER|SDK_VERSION'
+
+      - name: Build and package IPA
+        run: bash Scripts/build-ipa.sh
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WQtool-IPA
+          path: |
+            build/*.ipa
+            build/*.ipa.sha256
+            build/verify.json
+            build/entitlements.plist
+          if-no-files-found: error
+          retention-days: 30

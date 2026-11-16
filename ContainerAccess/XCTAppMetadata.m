@@ -1,0 +1,832 @@
+// App icon lookup for iOS 26.x.
+//
+// Base chain ported from WQ Files 0.9.5 WQUI.m (kolbicz/WQFiles,
+// GPL-3.0-or-later). Upstream documents the root problem in its own comment:
+// "iOS 26 refuses this app's icon requests" -- UIKit's private
+// _applicationIconImageForBundleIdentifier:format:scale: only hands a fixed
+// placeholder to third-party processes, and upstream's fallback only reads
+// loose PNGs next to Info.plist. Modern apps ship their icon inside
+// Assets.car, so both paths fail and the list falls back to a grey tile.
+//
+// This implementation keeps the upstream order and adds four sources:
+//   A. UIKit private API across format 0..8 with constant-placeholder
+//      detection (one format may still work on a given 26.x build).
+//   B. LaunchServices / IconServices icon data caches.
+//   C. CoreUI extraction of the named icon from the app's Assets.car.
+//   D. Any icon-ish loose PNG in the .app directory, not just hardcoded names.
+//   E. Closest parent bundle id (extensions), then a neutral symbol tile.
+// Every private call is guarded by respondsToSelector + @try/@catch, and
+// every candidate image is checked for size and colour variance so a grey
+// placeholder can never be presented as a real icon.
+// See THIRD_PARTY_NOTICES.md.
+#import "XCTAppMetadata.h"
+#import "WQAccess.h"
+#import "WQLaunchServices.h"
+#import <UIKit/UIKit.h>
+#import <CoreGraphics/CoreGraphics.h>
+#import <dlfcn.h>
+#import <fcntl.h>
+#import <unistd.h>
+#import <sys/stat.h>
+#import <ctype.h>
+#import <math.h>
+
+@interface UIImage (XCTApplicationIconPrivate)
++ (UIImage *)_applicationIconImageForBundleIdentifier:(NSString *)bid format:(int)fmt scale:(CGFloat)scale;
+@end
+
+static const CGFloat kXCTIconSide = 48.0;
+static NSString *const kXCTUnknownBundle = @"local.sandboxaccess.no-such-application";
+static NSString *const kXCTCatalogSetting = @"SandboxAccess.catalogIcons.v1";
+
+// MARK: - Safe dynamic invocation of private APIs
+
+typedef struct {
+    __unsafe_unretained id object;
+    void *pointer;
+} XCTInvokeResult;
+
+static BOOL XCTSetArgument(NSInvocation *inv, NSUInteger idx, id value)
+{
+    const char *t = [inv.methodSignature getArgumentTypeAtIndex:idx];
+    if (!t) return NO;
+    switch (t[0]) {
+        case '@': { id v = (value == NSNull.null) ? nil : value; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'd': { double v = [value doubleValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'f': { float v = [value floatValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'c': { char v = (char)[value intValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'C': { unsigned char v = (unsigned char)[value intValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 's': { short v = (short)[value intValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'S': { unsigned short v = (unsigned short)[value intValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'i': { int v = [value intValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'I': { unsigned int v = [value unsignedIntValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'l': { long v = [value longValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'L': { unsigned long v = [value unsignedLongValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'q': { long long v = [value longLongValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'Q': { unsigned long long v = [value unsignedLongLongValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case 'B': { BOOL v = [value boolValue]; [inv setArgument:&v atIndex:idx]; return YES; }
+        case '^': {
+            void *v = NULL;
+            if (value != NSNull.null && [value isKindOfClass:NSValue.class]) v = [value pointerValue];
+            [inv setArgument:&v atIndex:idx];
+            return YES;
+        }
+        default: return NO;
+    }
+}
+
+static XCTInvokeResult XCTInvoke(id target, NSString *selName, NSArray *args)
+{
+    XCTInvokeResult result = { .object = nil, .pointer = NULL };
+    if (!target || !selName.length) return result;
+    SEL sel = NSSelectorFromString(selName);
+    if (![target respondsToSelector:sel]) return result;
+    NSMethodSignature *sig = [target methodSignatureForSelector:sel];
+    if (!sig || sig.numberOfArguments != args.count + 2) return result;
+    NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
+    inv.target = target;
+    inv.selector = sel;
+    for (NSUInteger i = 0; i < args.count; i++) {
+        if (!XCTSetArgument(inv, i + 2, args[i])) return result;
+    }
+    @try {
+        [inv invoke];
+    } @catch (NSException *exception) {
+        return result;
+    }
+    const char *ret = sig.methodReturnType;
+    if (ret && ret[0] == '@' && sig.methodReturnLength == sizeof(id)) {
+        __unsafe_unretained id object = nil;
+        [inv getReturnValue:&object];
+        result.object = object;
+    } else if (ret && ret[0] == '^' && sig.methodReturnLength == sizeof(void *)) {
+        void *pointer = NULL;
+        [inv getReturnValue:&pointer];
+        result.pointer = pointer;
+    }
+    return result;
+}
+
+static id XCTInvokeObject(id target, NSString *selName, NSArray *args)
+{
+    return XCTInvoke(target, selName, args).object;
+}
+
+// MARK: - Image analysis
+
+// A 16x16 RGBA fingerprint plus a luminance standard deviation. A real icon
+// has colour variation; iOS's generic "unknown app" tile is nearly flat.
+static NSData *XCTIconPixels(UIImage *image, double *outDeviation)
+{
+    if (outDeviation) *outDeviation = 0;
+    if (!image || !image.CGImage) return nil;
+    const size_t side = 16;
+    uint8_t px[16 * 16 * 4] = {0};
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    if (!cs) return nil;
+    CGContextRef ctx = CGBitmapContextCreate(px, side, side, 8, side * 4, cs,
+                                             (CGBitmapInfo)kCGImageAlphaPremultipliedLast);
+    CGColorSpaceRelease(cs);
+    if (!ctx) return nil;
+    CGContextDrawImage(ctx, CGRectMake(0, 0, side, side), image.CGImage);
+    CGContextRelease(ctx);
+
+    double sum = 0, sumSq = 0;
+    NSUInteger n = 0;
+    for (NSUInteger i = 0; i < side * side; i++) {
+        const uint8_t *p = px + i * 4;
+        if (p[3] < 16) continue;
+        double v = ((double)p[0] * 0.299 + (double)p[1] * 0.587 + (double)p[2] * 0.114) * ((double)p[3] / 255.0);
+        sum += v; sumSq += v * v; n++;
+    }
+    if (n < 16) return nil;
+    double mean = sum / (double)n;
+    double variance = sumSq / (double)n - mean * mean;
+    if (outDeviation) *outDeviation = variance > 0 ? sqrt(variance) : 0;
+    return [NSData dataWithBytes:px length:sizeof(px)];
+}
+
+static BOOL XCTIconIsUsable(UIImage *image)
+{
+    if (!image || !image.CGImage) return NO;
+    size_t w = CGImageGetWidth(image.CGImage), h = CGImageGetHeight(image.CGImage);
+    if (w < 32 || h < 32 || w > 8192 || h > 8192) return NO;
+    double deviation = 0;
+    NSData *fp = XCTIconPixels(image, &deviation);
+    return fp && deviation > 2.5;
+}
+
+static CGFloat XCTIconScale(void)
+{
+    // UIKit scene enumeration is main-thread only; background resolution uses 2.0.
+    return NSThread.isMainThread ? (UIScreen.mainScreen.scale ?: 2.0) : 2.0;
+}
+
+// MARK: - Facts (on-device icon diagnostics)
+
+static NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *gXCTFacts;
+static NSLock *gXCTFactsLock;
+static NSUInteger gXCTIconNotes;
+static BOOL gXCTIconVerbose;
+
+static void XCTIconFactInit(void)
+{
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        gXCTFacts = [NSMutableDictionary new];
+        gXCTFactsLock = [NSLock new];
+    });
+}
+
+static void XCTRecordFact(NSString *bid, NSString *source, NSString *detail)
+{
+    XCTIconFactInit();
+    [gXCTFactsLock lock];
+    gXCTFacts[bid] = @{ @"source": source ?: @"?", @"detail": detail ?: @"" };
+    BOOL shouldLog = gXCTIconVerbose || gXCTIconNotes < 12;
+    if (shouldLog) gXCTIconNotes++;
+    [gXCTFactsLock unlock];
+    if (shouldLog) wq_log(@"icon %@ · %@ · %@", bid, source, detail);
+}
+
+NSDictionary<NSString *, NSString *> *XCTIconFact(NSString *bundleID)
+{
+    XCTIconFactInit();
+    [gXCTFactsLock lock];
+    NSDictionary *value = gXCTFacts[bundleID];
+    [gXCTFactsLock unlock];
+    return value;
+}
+
+// MARK: - Disk cache (real icons only)
+
+static NSString *XCTCacheFile(NSString *bid)
+{
+    NSString *dir = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+                     stringByAppendingPathComponent:@"XCTAppIcons-v3"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir
+                             withIntermediateDirectories:YES attributes:nil error:NULL];
+    NSMutableString *safe = [NSMutableString stringWithCapacity:96];
+    for (NSUInteger i = 0; i < bid.length && i < 80; i++) {
+        unichar c = [bid characterAtIndex:i];
+        char ch = (c < 128 && (isalnum((int)c) || c == '.' || c == '-' || c == '_')) ? (char)c : '_';
+        [safe appendFormat:@"%c", ch];
+    }
+    uint64_t hash = 1469598103934665603ULL;
+    for (NSUInteger i = 0; i < bid.length; i++) {
+        hash ^= (uint64_t)[bid characterAtIndex:i];
+        hash *= 1099511628211ULL;
+    }
+    return [dir stringByAppendingPathComponent:[NSString stringWithFormat:@"%@-%016llx.png", safe, hash]];
+}
+
+void XCTClearAppIconCache(void)
+{
+    XCTIconFactInit();
+    NSString *dir = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+                     stringByAppendingPathComponent:@"XCTAppIcons-v3"];
+    NSArray<NSString *> *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL] ?: @[];
+    for (NSString *file in files) {
+        NSString *path = [dir stringByAppendingPathComponent:file];
+        [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+    }
+    [gXCTFactsLock lock];
+    [gXCTFacts removeAllObjects];
+    gXCTIconNotes = 0;
+    [gXCTFactsLock unlock];
+    wq_log(@"图标缓存已清空（%lu 个文件）", (unsigned long)files.count);
+}
+
+BOOL XCTCatalogIconsEnabled(void)
+{
+    id value = [NSUserDefaults.standardUserDefaults objectForKey:kXCTCatalogSetting];
+    return value ? [value boolValue] : YES;
+}
+
+void XCTSetCatalogIconsEnabled(BOOL enabled)
+{
+    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:kXCTCatalogSetting];
+    wq_log(@"Assets.car 图标解析已%@", enabled ? @"开启" : @"关闭");
+}
+
+// MARK: - Source A: UIKit private API across every format
+
+static UIImage *XCTRawIcon(NSString *bid, int format, CGFloat scale)
+{
+    if (![UIImage respondsToSelector:@selector(_applicationIconImageForBundleIdentifier:format:scale:)]) return nil;
+    @try {
+        return [UIImage _applicationIconImageForBundleIdentifier:bid format:format scale:scale];
+    } @catch (NSException *exception) {
+        return nil;
+    }
+}
+
+// If Safari, Preferences, Camera and a nonexistent id all produce the exact
+// same bitmap, this format is a constant placeholder and must be discarded.
+static BOOL XCTFormatIsPlaceholder(int format)
+{
+    static NSMutableDictionary<NSNumber *, NSNumber *> *verdicts;
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ verdicts = [NSMutableDictionary new]; lock = [NSLock new]; });
+    NSNumber *key = @(format);
+    [lock lock];
+    NSNumber *cached = verdicts[key];
+    [lock unlock];
+    if (cached) return cached.boolValue;
+
+    NSArray<NSString *> *probes = @[@"com.apple.mobilesafari", @"com.apple.Preferences",
+                                    @"com.apple.camera", kXCTUnknownBundle];
+    NSMutableArray<NSData *> *prints = [NSMutableArray array];
+    for (NSString *probe in probes) {
+        NSData *fp = XCTIconPixels(XCTRawIcon(probe, format, 2.0), NULL);
+        if (fp) [prints addObject:fp];
+    }
+    BOOL constant = prints.count >= 3;
+    for (NSUInteger i = 1; constant && i < prints.count; i++) {
+        if (![prints[i] isEqualToData:prints[0]]) constant = NO;
+    }
+    [lock lock];
+    verdicts[key] = @(constant);
+    [lock unlock];
+    return constant;
+}
+
+static NSData *XCTBlankPrint(int format)
+{
+    static NSMutableDictionary<NSNumber *, NSData *> *prints;
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ prints = [NSMutableDictionary new]; lock = [NSLock new]; });
+    NSNumber *key = @(format);
+    [lock lock];
+    NSData *value = prints[key];
+    [lock unlock];
+    if (value) return value;
+    NSData *fp = XCTIconPixels(XCTRawIcon(kXCTUnknownBundle, format, 2.0), NULL);
+    if (fp) {
+        [lock lock];
+        prints[key] = fp;
+        [lock unlock];
+    }
+    return fp;
+}
+
+static UIImage *XCTUIKitIcon(NSString *bid, NSString **source, NSString **detail)
+{
+    static NSInteger preferred = -1;
+    NSMutableArray<NSNumber *> *formats = [NSMutableArray arrayWithCapacity:10];
+    if (preferred >= 0) [formats addObject:@(preferred)];
+    for (int f = 0; f <= 8; f++) if (f != preferred) [formats addObject:@(f)];
+    NSArray<NSNumber *> *scales = @[@(XCTIconScale()), @2.0, @3.0];
+    NSUInteger refused = 0;
+
+    for (NSNumber *formatNumber in formats) {
+        int format = formatNumber.intValue;
+        if (XCTFormatIsPlaceholder(format)) { refused++; continue; }
+        NSData *blank = XCTBlankPrint(format);
+        for (NSNumber *scaleNumber in scales) {
+            UIImage *raw = XCTRawIcon(bid, format, scaleNumber.doubleValue);
+            if (!raw) continue;
+            NSData *fp = XCTIconPixels(raw, NULL);
+            if (blank && fp && [fp isEqualToData:blank]) continue;
+            if (!XCTIconIsUsable(raw)) continue;
+            preferred = format;
+            *source = [NSString stringWithFormat:@"UIKit fmt%d", format];
+            *detail = [NSString stringWithFormat:@"私有图标接口 format=%d scale=%.1f", format, scaleNumber.doubleValue];
+            return raw;
+        }
+    }
+    *detail = [NSString stringWithFormat:@"私有接口全部返回占位或拒绝（%lu/9 个 format 为固定占位）", (unsigned long)refused];
+    return nil;
+}
+
+// MARK: - Source B: LaunchServices / IconServices caches
+
+static UIImage *XCTSystemIconData(NSString *bid, NSString **source, NSString **detail)
+{
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    id workspace = XCTInvokeObject(workspaceClass, @"defaultWorkspace", @[]);
+    if (!workspace) workspace = XCTInvokeObject(workspaceClass, @"sharedWorkspace", @[]);
+    id proxy = nil;
+    for (NSString *sel in @[@"applicationForBundleIdentifier:", @"applicationWithBundleIdentifier:",
+                            @"applicationForIdentifier:"]) {
+        proxy = XCTInvokeObject(workspace, sel, @[bid]);
+        if (proxy) break;
+    }
+    if (proxy) {
+        NSArray<NSString *> *selectors = @[@"iconDataForVariant:", @"_iconDataForVariant:",
+                                           @"iconDataForVariant:format:", @"iconDataForVariant:withOptions:"];
+        for (NSString *sel in selectors) {
+            NSUInteger arity = sel.length - [sel stringByReplacingOccurrencesOfString:@":" withString:@""].length;
+            for (NSInteger variant = 0; variant < 4; variant++) {
+                NSArray *args = arity >= 2 ? @[@(variant), @0] : @[@(variant)];
+                id data = XCTInvokeObject(proxy, sel, args);
+                if (![data isKindOfClass:NSData.class] || [(NSData *)data length] < 128) continue;
+                UIImage *image = [UIImage imageWithData:(NSData *)data scale:2.0];
+                if (!XCTIconIsUsable(image)) continue;
+                *source = @"LaunchServices";
+                *detail = [NSString stringWithFormat:@"iconDataForVariant:%ld（%lu 字节 PNG）",
+                           (long)variant, (unsigned long)[(NSData *)data length]];
+                return image;
+            }
+        }
+    }
+
+    Class iconCacheClass = NSClassFromString(@"ISIconCache");
+    id cache = nil;
+    for (NSString *sel in @[@"sharedCache", @"defaultCache", @"sharedInstance"]) {
+        cache = XCTInvokeObject(iconCacheClass, sel, @[]);
+        if (cache) break;
+    }
+    for (NSString *sel in @[@"iconForBundleIdentifier:", @"iconImageForBundleIdentifier:",
+                            @"cachedIconForBundleIdentifier:"]) {
+        XCTInvokeResult result = XCTInvoke(cache, sel, @[bid]);
+        UIImage *image = [result.object isKindOfClass:UIImage.class] ? result.object : nil;
+        if (!image && result.pointer && CFGetTypeID(result.pointer) == CGImageGetTypeID()) {
+            image = [UIImage imageWithCGImage:(CGImageRef)result.pointer scale:2.0
+                                  orientation:UIImageOrientationUp];
+        }
+        if (XCTIconIsUsable(image)) {
+            *source = @"IconServices";
+            *detail = sel;
+            return image;
+        }
+    }
+    *detail = proxy ? @"LS/IS 图标缓存未返回有效位图" : @"LSApplicationWorkspace 不可用";
+    return nil;
+}
+
+// MARK: - Bundle helpers
+
+static NSData *XCTReadFile(NSString *path, NSUInteger limit)
+{
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data.length || data.length > limit) {
+        wq_grant(path.stringByDeletingLastPathComponent);
+        wq_grant(path);
+        data = [NSData dataWithContentsOfFile:path];
+    }
+    return (data.length && data.length <= limit) ? data : nil;
+}
+
+static NSDictionary *XCTReadInfo(NSString *bundle)
+{
+    NSString *path = [bundle stringByAppendingPathComponent:@"Info.plist"];
+    NSData *data = [NSData dataWithContentsOfFile:path];
+    if (!data.length) {
+        wq_grant(bundle);
+        wq_grant(path);
+        data = [NSData dataWithContentsOfFile:path];
+    }
+    if (!data.length || data.length > 8 * 1024 * 1024) return nil;
+    id plist = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:NULL];
+    return [plist isKindOfClass:NSDictionary.class] ? plist : nil;
+}
+
+static NSOrderedSet<NSString *> *XCTIconNames(NSDictionary *info)
+{
+    NSMutableOrderedSet<NSString *> *names = [NSMutableOrderedSet new];
+    for (NSString *key in @[@"CFBundleIcons", @"CFBundleIcons~ipad"]) {
+        NSDictionary *icons = [info[key] isKindOfClass:NSDictionary.class] ? info[key] : nil;
+        NSDictionary *primary = [icons[@"CFBundlePrimaryIcon"] isKindOfClass:NSDictionary.class]
+                                ? icons[@"CFBundlePrimaryIcon"] : nil;
+        if (!primary) continue;
+        if ([primary[@"CFBundleIconName"] isKindOfClass:NSString.class]) [names addObject:primary[@"CFBundleIconName"]];
+        NSArray *files = [primary[@"CFBundleIconFiles"] isKindOfClass:NSArray.class] ? primary[@"CFBundleIconFiles"] : @[];
+        for (id file in files.reverseObjectEnumerator) if ([file isKindOfClass:NSString.class]) [names addObject:file];
+    }
+    NSArray *legacy = [info[@"CFBundleIconFiles"] isKindOfClass:NSArray.class] ? info[@"CFBundleIconFiles"] : @[];
+    for (id file in legacy.reverseObjectEnumerator) if ([file isKindOfClass:NSString.class]) [names addObject:file];
+    if ([info[@"CFBundleIconFile"] isKindOfClass:NSString.class]) [names addObject:info[@"CFBundleIconFile"]];
+    [names addObjectsFromArray:@[@"AppIcon", @"AppIcon60x60", @"AppIcon76x76", @"AppIcon~ipad", @"Icon"]];
+    return names;
+}
+
+// MARK: - Source C: CoreUI extraction from Assets.car
+
+static id XCTOpenCatalog(NSString *carPath)
+{
+    static Class catalogClass;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        catalogClass = NSClassFromString(@"CUICatalog");
+        if (!catalogClass) {
+            const char *paths[] = {
+                "/System/Library/PrivateFrameworks/CoreUI.framework/CoreUI",
+                "/System/Library/PrivateFrameworks/CoreUI.framework/Versions/A/CoreUI",
+                "/System/Library/Frameworks/CoreUI.framework/CoreUI",
+            };
+            for (NSUInteger i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+                dlopen(paths[i], RTLD_LAZY | RTLD_GLOBAL);
+            }
+            catalogClass = NSClassFromString(@"CUICatalog");
+        }
+    });
+    if (!catalogClass) return nil;
+    NSURL *url = [NSURL fileURLWithPath:carPath];
+    NSArray<NSArray *> *attempts = @[
+        @[@"initWithURL:error:", @[url, NSNull.null]],
+        @[@"initWithURL:", @[url]],
+        @[@"initWithPath:error:", @[carPath, NSNull.null]],
+        @[@"initWithPath:", @[carPath]],
+    ];
+    for (NSArray *attempt in attempts) {
+        id allocated = [catalogClass alloc];
+        id catalog = XCTInvokeObject(allocated, attempt[0], attempt[1]);
+        if (catalog) return catalog;
+    }
+    return nil;
+}
+
+static NSArray<NSString *> *XCTCatalogNames(id catalog)
+{
+    for (NSString *sel in @[@"allImageNames", @"imageNames", @"allRenditionNames", @"allAssetKeys"]) {
+        id value = XCTInvokeObject(catalog, sel, @[]);
+        if (![value isKindOfClass:NSArray.class]) continue;
+        NSMutableArray<NSString *> *names = [NSMutableArray array];
+        for (id item in (NSArray *)value) {
+            if ([item isKindOfClass:NSString.class]) [names addObject:item];
+        }
+        if (names.count) return names;
+    }
+    return @[];
+}
+
+static UIImage *XCTNamedImageToUIImage(id named)
+{
+    if (!named) return nil;
+    for (NSString *sel in @[@"image", @"CGImage", @"cgImage", @"createImage", @"unflattenedImage"]) {
+        XCTInvokeResult result = XCTInvoke(named, sel, @[]);
+        if ([result.object isKindOfClass:UIImage.class]) return result.object;
+        if (result.pointer && CFGetTypeID(result.pointer) == CGImageGetTypeID()) {
+            CGImageRef cg = (CGImageRef)result.pointer;
+            return [UIImage imageWithCGImage:cg scale:2.0 orientation:UIImageOrientationUp];
+        }
+    }
+    return nil;
+}
+
+static UIImage *XCTCatalogIcon(NSString *bid, NSString *bundle, NSOrderedSet<NSString *> *infoNames,
+                               NSString **source, NSString **detail)
+{
+    NSString *car = [bundle stringByAppendingPathComponent:@"Assets.car"];
+    wq_grant(bundle);
+    wq_grant(car);
+    if (![[NSFileManager defaultManager] fileExistsAtPath:car]) {
+        *detail = @".app 内没有 Assets.car";
+        return nil;
+    }
+    id catalog = XCTOpenCatalog(car);
+    if (!catalog) {
+        *detail = @"CoreUI / CUICatalog 不可用";
+        return nil;
+    }
+    NSArray<NSString *> *allNames = XCTCatalogNames(catalog);
+    NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet new];
+    for (NSString *name in infoNames) if ([allNames containsObject:name]) [candidates addObject:name];
+    for (NSString *name in allNames) {
+        NSString *lower = name.lowercaseString;
+        if ([lower containsString:@"appicon"] || [lower isEqualToString:@"icon"] || [lower hasPrefix:@"icon-"]) {
+            [candidates addObject:name];
+            if (candidates.count >= 12) break;
+        }
+    }
+    for (NSString *name in infoNames) [candidates addObject:name];
+
+    NSArray<NSString *> *selectors = @[@"imageWithName:scaleFactor:",
+                                       @"imageWithName:scaleFactor:deviceIdiom:",
+                                       @"imageWithName:"];
+    for (NSString *name in candidates) {
+        for (NSString *sel in selectors) {
+            for (NSNumber *scale in @[@3.0, @2.0, @1.0]) {
+                NSArray *args;
+                if ([sel isEqualToString:@"imageWithName:"]) args = @[name];
+                else if ([sel hasSuffix:@"deviceIdiom:"]) args = @[name, scale, @0];
+                else args = @[name, scale];
+                id named = XCTInvokeObject(catalog, sel, args);
+                UIImage *image = XCTNamedImageToUIImage(named);
+                if (!XCTIconIsUsable(image)) continue;
+                *source = @"Assets.car";
+                *detail = [NSString stringWithFormat:@"CoreUI %@ · %@（catalog %lu 项）", sel, name,
+                           (unsigned long)allNames.count];
+                return image;
+            }
+        }
+    }
+    *detail = [NSString stringWithFormat:@"Assets.car 可打开（%lu 项），但未找到可渲染的 AppIcon",
+               (unsigned long)allNames.count];
+    return nil;
+}
+
+// MARK: - Source D: loose PNGs in the .app
+
+static UIImage *XCTLoosePNGIcon(NSString *bid, NSString *bundle, NSOrderedSet<NSString *> *names,
+                                NSString **source, NSString **detail)
+{
+    for (NSString *name in names) {
+        NSString *base = name.stringByDeletingPathExtension;
+        if (!base.length || [base containsString:@"/"] || [base containsString:@".."] || base.length > 200) continue;
+        for (NSString *suffix in @[@"@3x.png", @"@2x.png", @"@2x~ipad.png", @"~ipad.png", @".png"]) {
+            NSString *file = [bundle stringByAppendingPathComponent:[base stringByAppendingString:suffix]];
+            NSData *data = XCTReadFile(file, 8 * 1024 * 1024);
+            if (!data) continue;
+            UIImage *image = [UIImage imageWithData:data scale:2.0];
+            if (!XCTIconIsUsable(image)) continue;
+            *source = @"安装包 PNG";
+            *detail = file.lastPathComponent;
+            return image;
+        }
+    }
+    NSArray<NSString *> *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundle error:NULL];
+    if (!files.count) {
+        wq_grant(bundle);
+        files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundle error:NULL] ?: @[];
+    }
+    NSMutableArray<NSString *> *iconFiles = [NSMutableArray array];
+    for (NSString *file in files) {
+        NSString *lower = file.lowercaseString;
+        if ([lower.pathExtension isEqualToString:@"png"] && [lower containsString:@"icon"]) [iconFiles addObject:file];
+    }
+    [iconFiles sortUsingSelector:@selector(compare:)];
+    for (NSString *file in iconFiles) {
+        NSData *data = XCTReadFile([bundle stringByAppendingPathComponent:file], 8 * 1024 * 1024);
+        if (!data) continue;
+        UIImage *image = [UIImage imageWithData:data scale:2.0];
+        if (!XCTIconIsUsable(image)) continue;
+        *source = @"安装包 PNG";
+        *detail = [NSString stringWithFormat:@"目录扫描命中 %@", file];
+        return image;
+    }
+    *detail = [NSString stringWithFormat:@"%@ 内无可读图标 PNG（%lu 个文件）",
+               bundle.lastPathComponent, (unsigned long)files.count];
+    return nil;
+}
+
+static UIImage *XCTBundleIcon(NSString *bid, NSString **source, NSString **detail)
+{
+    NSString *bundle = wq_bundle_path_for_id(bid);
+    if (!bundle.length) {
+        *detail = @"LaunchServices 未给出 .app 路径";
+        return nil;
+    }
+    wq_grant(bundle);
+    NSDictionary *info = XCTReadInfo(bundle);
+    if (!info) {
+        *detail = [NSString stringWithFormat:@"无法读取 %@/Info.plist", bundle.lastPathComponent];
+        return nil;
+    }
+    NSString *identifier = info[@"CFBundleIdentifier"];
+    if ([identifier isKindOfClass:NSString.class] && ![identifier isEqualToString:bid] &&
+        ![bid hasPrefix:identifier]) {
+        *detail = [NSString stringWithFormat:@"bundle id 不匹配（%@）", identifier];
+        return nil;
+    }
+    NSOrderedSet<NSString *> *names = XCTIconNames(info);
+    if (XCTCatalogIconsEnabled()) {
+        UIImage *image = XCTCatalogIcon(bid, bundle, names, source, detail);
+        if (image) return image;
+    } else {
+        *detail = @"Assets.car 解析已在设置中关闭";
+    }
+    NSString *catalogReason = [*detail copy];
+    UIImage *loose = XCTLoosePNGIcon(bid, bundle, names, source, detail);
+    if (loose) return loose;
+    *detail = [NSString stringWithFormat:@"%@；%@", catalogReason, *detail];
+    return nil;
+}
+
+// MARK: - Rendering
+
+static UIGraphicsImageRenderer *XCTRenderer(void)
+{
+    UIGraphicsImageRendererFormat *format = [UIGraphicsImageRendererFormat defaultFormat];
+    format.scale = 2.0;
+    format.opaque = NO;
+    return [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(kXCTIconSide, kXCTIconSide) format:format];
+}
+
+static UIBezierPath *XCTIconPath(void)
+{
+    return [UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, kXCTIconSide, kXCTIconSide)
+                                      cornerRadius:kXCTIconSide * 0.225];
+}
+
+static UIImage *XCTRoundIcon(UIImage *raw)
+{
+    return [XCTRenderer() imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
+        [XCTIconPath() addClip];
+        [raw drawInRect:CGRectMake(0, 0, kXCTIconSide, kXCTIconSide)];
+    }];
+}
+
+static NSString *XCTTileSymbol(NSString *bid)
+{
+    NSString *key = bid.lowercaseString;
+    static NSArray<NSArray<NSString *> *> *rules;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        rules = @[
+            @[@"camera", @"camera.fill"],      @[@"photo", @"photo.fill"],
+            @[@"map", @"map.fill"],            @[@"weather", @"cloud.sun.fill"],
+            @[@"music", @"music.note"],        @[@"video", @"play.rectangle.fill"],
+            @[@"game", @"gamecontroller.fill"], @[@"book", @"book.fill"],
+            @[@"mail", @"envelope.fill"],      @[@"message", @"message.fill"],
+            @[@"xin", @"message.fill"],        @[@"phone", @"phone.fill"],
+            @[@"health", @"heart.fill"],       @[@"wallet", @"creditcard.fill"],
+            @[@"safari", @"safari.fill"],      @[@"note", @"note.text"],
+            @[@"calendar", @"calendar"],       @[@"cloud", @"cloud.fill"],
+            @[@"keyboard", @"keyboard.fill"],  @[@"widget", @"square.grid.2x2.fill"],
+            @[@"setting", @"gearshape.fill"],  @[@"store", @"bag.fill"],
+        ];
+    });
+    for (NSArray<NSString *> *rule in rules) {
+        if ([key containsString:rule[0]]) return rule[1];
+    }
+    return @"app.fill";
+}
+
+static UIImage *XCTServiceTile(NSString *bid)
+{
+    // A hash-derived hue makes every placeholder visually distinct, and a
+    // saturated gradient guarantees contrast against the white list cards.
+    // The previous near-white tile looked like "no icon" on a white background.
+    uint64_t hash = 1469598103934665603ULL;
+    const char *utf = bid.UTF8String ?: "";
+    for (size_t i = 0; utf[i]; i++) {
+        hash ^= (uint8_t)utf[i];
+        hash *= 1099511628211ULL;
+    }
+    CGFloat hue = (CGFloat)(hash % 360ULL) / 360.0;
+    UIColor *top = [UIColor colorWithHue:hue saturation:0.52 brightness:0.95 alpha:1.0];
+    UIColor *bottom = [UIColor colorWithHue:fmod(hue + 0.07, 1.0) saturation:0.66 brightness:0.78 alpha:1.0];
+
+    return [XCTRenderer() imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
+        [XCTIconPath() addClip];
+        CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
+        NSArray *colors = @[(__bridge id)top.CGColor, (__bridge id)bottom.CGColor];
+        CGGradientRef gradient = CGGradientCreateWithColors(space, (__bridge CFArrayRef)colors, NULL);
+        if (gradient) {
+            CGContextDrawLinearGradient(ctx.CGContext, gradient,
+                                        CGPointMake(0, 0),
+                                        CGPointMake(0, kXCTIconSide),
+                                        kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
+            CGGradientRelease(gradient);
+        }
+        CGColorSpaceRelease(space);
+
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:22
+                                                                                         weight:UIImageSymbolWeightSemibold];
+        UIImage *symbol = [[UIImage systemImageNamed:XCTTileSymbol(bid) withConfiguration:config] ?:
+                           [UIImage systemImageNamed:@"app.fill" withConfiguration:config]
+                           imageWithTintColor:[UIColor whiteColor]
+                           renderingMode:UIImageRenderingModeAlwaysOriginal];
+        CGFloat s = kXCTIconSide;
+        [symbol drawInRect:CGRectMake((s - symbol.size.width) / 2, (s - symbol.size.height) / 2,
+                                     symbol.size.width, symbol.size.height)];
+    }];
+}
+
+// MARK: - Public resolution
+
+static NSData *XCTResolveBody(NSString *bid, BOOL force)
+{
+    if (!bid.length) return nil;
+    static NSCache<NSString *, NSData *> *memory;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        memory = [NSCache new];
+        memory.countLimit = 256;
+    });
+    NSString *file = XCTCacheFile(bid);
+    if (!force) {
+        NSData *hit = [memory objectForKey:bid];
+        if (hit) return hit;
+        NSData *disk = [NSData dataWithContentsOfFile:file];
+        if (disk.length) {
+            [memory setObject:disk forKey:bid];
+            return disk;
+        }
+    }
+
+    NSString *source = @"占位图";
+    NSString *detail = @"所有来源均未返回可用图标";
+    NSString *reasonA = @"", *reasonB = @"", *reasonC = @"";
+    UIImage *raw = nil;
+
+    raw = XCTUIKitIcon(bid, &source, &reasonA);
+    if (!raw) {
+        NSString *lsSource = source;
+        raw = XCTSystemIconData(bid, &lsSource, &reasonB);
+        if (raw) source = lsSource;
+    }
+    if (!raw) {
+        NSString *bundleSource = source;
+        raw = XCTBundleIcon(bid, &bundleSource, &reasonC);
+        if (raw) source = bundleSource;
+    }
+    if (!raw) {
+        NSArray<NSString *> *parts = [bid componentsSeparatedByString:@"."];
+        for (NSInteger n = (NSInteger)parts.count - 1; !raw && n >= 3; n--) {
+            NSString *parent = [[parts subarrayWithRange:NSMakeRange(0, (NSUInteger)n)] componentsJoinedByString:@"."];
+            NSString *parentSource = source;
+            raw = XCTUIKitIcon(parent, &parentSource, &reasonA);
+            if (raw) {
+                source = @"父应用图标";
+                detail = [NSString stringWithFormat:@"%@ → %@", parent, parentSource];
+            }
+        }
+    }
+
+    BOOL real = raw != nil;
+    if (real && [source hasPrefix:@"UIKit"]) detail = reasonA;
+    else if (real && ([source isEqualToString:@"LaunchServices"] || [source isEqualToString:@"IconServices"])) detail = reasonB;
+    else if (real && ([source isEqualToString:@"Assets.car"] || [source isEqualToString:@"安装包 PNG"])) detail = reasonC;
+    else if (!real) detail = [NSString stringWithFormat:@"A:%@ | B:%@ | C:%@", reasonA, reasonB, reasonC];
+
+    UIImage *icon = real ? XCTRoundIcon(raw) : XCTServiceTile(bid);
+    NSData *png = UIImagePNGRepresentation(icon);
+    if (png) {
+        [memory setObject:png forKey:bid];
+        if (real) [png writeToFile:file atomically:YES];
+        else [[NSFileManager defaultManager] removeItemAtPath:file error:NULL];
+    }
+    XCTRecordFact(bid, source, detail);
+    return png;
+}
+
+static NSData *XCTResolve(NSString *bid, BOOL force)
+{
+    NSData *result = nil;
+    @autoreleasepool {
+        result = XCTResolveBody(bid, force);
+    }
+    return result;
+}
+
+NSData *XCTAppIconPNG(NSString *bundleID)
+{
+    return XCTResolve(bundleID, NO);
+}
+
+NSData *XCTAppIconPNGForce(NSString *bundleID)
+{
+    XCTIconFactInit();
+    [gXCTFactsLock lock];
+    gXCTIconVerbose = YES;
+    [gXCTFactsLock unlock];
+    NSData *png = XCTResolve(bundleID, YES);
+    [gXCTFactsLock lock];
+    gXCTIconVerbose = NO;
+    [gXCTFactsLock unlock];
+    return png;
+}
+
+void XCTWarmAppIcons(NSArray<NSString *> *bundleIDs)
+{
+    for (NSString *bid in bundleIDs) {
+        @autoreleasepool {
+            if (bid.length) (void)XCTResolve(bid, NO);
+        }
+    }
+}

@@ -1,0 +1,17 @@
+build/
+dist/
+Research/
+__pycache__/
+*.pyc
+*.xcuserstate
+xcuserdata/
+.DS_Store
+*.log
+.env
+.env.*
+!.env.example
+*.mobileprovision
+*.p12
+*.p8
+*.cer
+WQtool.xcodeproj/
