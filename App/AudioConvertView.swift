@@ -176,6 +176,7 @@ struct AudioConvertView: View {
         case .nb: return "AMR-NB 12.2 kbps / 8 kHz 单声道，微信语音同参数，兼容性最好"
         case .wb: return "AMR-WB 23.85 kbps / 16 kHz 单声道，音质明显更清晰"
         case .silk: return "SILK v3 25 kbps / 24 kHz 单声道，微信 / QQ 的 .aud 语音格式"
+        @unknown default: return "未知格式"
         }
     }
 
