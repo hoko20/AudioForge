@@ -5,13 +5,19 @@ struct FilesTab: View {
     @EnvironmentObject private var files: FileListModel
     @State private var query = ""
     @State private var showLog = false
+    @State private var categoryFilter: String?
+
+    private var categories: [String] {
+        Set(files.apps.map(\.category)).filter { !$0.isEmpty }.sorted()
+    }
 
     private var visible: [AppRecord] {
-        guard !query.isEmpty else { return files.apps }
         let q = query.lowercased()
-        return files.apps.filter {
-            $0.name.lowercased().contains(q) || $0.id.lowercased().contains(q)
-                || $0.path.lowercased().contains(q) || $0.category.contains(query)
+        return files.apps.filter { app in
+            if let categoryFilter, app.category != categoryFilter { return false }
+            guard !q.isEmpty else { return true }
+            return app.name.lowercased().contains(q) || app.id.lowercased().contains(q)
+                || app.path.lowercased().contains(q) || app.category.contains(query)
         }
     }
 
@@ -20,6 +26,21 @@ struct FilesTab: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     SearchCapsule(text: $query, prompt: "搜索 App")
+
+                    if let categoryFilter {
+                        HStack(spacing: 10) {
+                            Text(categoryFilter)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(Palette.warning)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(Palette.warning.opacity(0.10), in: Capsule())
+                            Button("清除筛选") { self.categoryFilter = nil }
+                                .font(.system(size: 12))
+                                .foregroundStyle(Palette.secondary)
+                            Spacer()
+                        }
+                    }
 
                     StatCard(appCount: visible.count,
                              containerCount: files.containerCount,
@@ -37,7 +58,9 @@ struct FilesTab: View {
                     SectionLabel(text: "应用列表")
 
                     if visible.isEmpty && !files.busy {
-                        EmptyCard(text: "还没有应用容器。点右上角刷新；首次定位 LaunchServices 数据库可能需要几分钟。")
+                        EmptyCard(text: categoryFilter == nil
+                                  ? "还没有应用容器。点右上角刷新；首次定位 LaunchServices 数据库可能需要几分钟。"
+                                  : "该分类下没有应用，可点右上角切换分类。")
                     } else {
                         LazyVStack(spacing: 12) {
                             ForEach(visible) { app in
@@ -70,6 +93,39 @@ struct FilesTab: View {
             .refreshable { files.refresh() }
             .enableInteractivePop()
             .glassNavigationBar(title: "文件")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button {
+                            categoryFilter = nil
+                        } label: {
+                            if categoryFilter == nil {
+                                Label("全部分类", systemImage: "checkmark")
+                            } else {
+                                Text("全部分类")
+                            }
+                        }
+                        ForEach(categories, id: \.self) { category in
+                            Button {
+                                categoryFilter = category
+                            } label: {
+                                if categoryFilter == category {
+                                    Label(category, systemImage: "checkmark")
+                                } else {
+                                    Text(category)
+                                }
+                            }
+                        }
+                    } label: {
+                        Image(systemName: categoryFilter == nil
+                              ? "line.3.horizontal.decrease.circle"
+                              : "line.3.horizontal.decrease.circle.fill")
+                            .font(.system(size: 17, weight: .medium))
+                            .foregroundStyle(categoryFilter == nil ? Palette.ink : Palette.warning)
+                    }
+                    .accessibilityLabel("选择分类")
+                }
+            }
             .navigationDestination(for: AppRecord.self) { app in
                 AppAccessView(app: app)
             }
