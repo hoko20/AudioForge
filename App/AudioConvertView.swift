@@ -9,6 +9,7 @@ import PhotosUI
 private extension AudioOutputFormat {
     static let nb = AudioOutputFormat(rawValue: 0)!
     static let wb = AudioOutputFormat(rawValue: 1)!
+    static let m4a = AudioOutputFormat(rawValue: 3)!
 }
 
 /// 「音频转换」工具：把 mp3 / mp4 等带音轨的媒体转成 AMR-NB / AMR-WB（.amr）
@@ -102,7 +103,7 @@ struct AudioConvertView: View {
             }
 
             Section {
-                Text("AMR-NB：12.2 kbps / 8 kHz，兼容性最好；AMR-WB：23.85 kbps / 16 kHz，更清晰；SILK .aud：25 kbps / 24 kHz，微信 / QQ 语音格式。源文件不会被修改。")
+                Text("AMR-NB / AMR-WB：体积小、兼容性最好；SILK .aud：微信 / QQ 语音格式，上限 40 kbps；M4A：AAC 256 kbps 高保真，适合日常收听。源文件不会被修改。")
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.tertiary)
                     .cardRow()
@@ -236,9 +237,10 @@ struct AudioConvertView: View {
                 SectionLabel(text: "输出格式")
 
                 Picker("输出格式", selection: $format) {
-                    Text("AMR-NB (.amr)").tag(AudioOutputFormat.nb)
-                    Text("AMR-WB (.amr)").tag(AudioOutputFormat.wb)
-                    Text("微信 .aud").tag(AudioOutputFormat.silk)
+                    Text("NB").tag(AudioOutputFormat.nb)
+                    Text("WB").tag(AudioOutputFormat.wb)
+                    Text("aud").tag(AudioOutputFormat.silk)
+                    Text("M4A").tag(AudioOutputFormat.m4a)
                 }
                 .pickerStyle(.segmented)
                 .tint(Palette.ink)
@@ -253,9 +255,10 @@ struct AudioConvertView: View {
 
     private var formatHint: String {
         switch format {
-        case .nb: return "AMR-NB 12.2 kbps / 8 kHz 单声道，微信语音同参数，兼容性最好"
-        case .wb: return "AMR-WB 23.85 kbps / 16 kHz 单声道，音质明显更清晰"
-        case .silk: return "SILK v3 25 kbps / 24 kHz 单声道，微信 / QQ 的 .aud 语音格式"
+        case .nb: return "AMR-NB 12.2 kbps / 8 kHz 单声道，兼容性最好，音质最差"
+        case .wb: return "AMR-WB 23.85 kbps / 16 kHz 单声道，人声清晰"
+        case .silk: return "SILK v3 40 kbps / 24 kHz，微信 / QQ 的 .aud 格式；本质是语音编码，音乐类仍有明显压缩感"
+        case .m4a: return "AAC 256 kbps / 44.1 kHz 立体声，音质接近原文件，适合保留高保真音频"
         @unknown default: return "未知格式"
         }
     }
@@ -422,7 +425,7 @@ struct AudioConvertView: View {
         let dir = documentsAudioForgeDir
         let fm = FileManager.default
         let names = (try? fm.contentsOfDirectory(atPath: dir)) ?? []
-        let allowed: Set<String> = ["aud", "amr"]
+        let allowed: Set<String> = ["aud", "amr", "m4a"]
 
         var found: [OutputFile] = []
         for name in names where allowed.contains((name as NSString).pathExtension.lowercased()) {

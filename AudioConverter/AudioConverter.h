@@ -7,7 +7,8 @@ typedef void (^AudioProgressBlock)(double progress);
 typedef NS_ENUM(NSInteger, AudioOutputFormat) {
     AudioOutputFormatNB = 0,   ///< AMR-NB 12.2 kbps / 8 kHz，.amr，兼容性最好
     AudioOutputFormatWB = 1,   ///< AMR-WB 23.85 kbps / 16 kHz，.amr，明显更清晰
-    AudioOutputFormatSilk = 2, ///< SILK v3 25 kbps / 24 kHz，.aud，微信 / QQ 语音
+    AudioOutputFormatSilk = 2, ///< SILK v3 最高 40 kbps / 24 kHz，.aud，微信 / QQ 语音
+    AudioOutputFormatM4A  = 3, ///< AAC 256 kbps / 44.1 kHz 立体声，.m4a，音质接近原声
 };
 
 typedef NS_ENUM(NSInteger, AudioConverterError) {
@@ -20,10 +21,11 @@ typedef NS_ENUM(NSInteger, AudioConverterError) {
 FOUNDATION_EXPORT NSString *const AudioConverterErrorDomain;
 
 /// 把任意带音轨的媒体（MP3 / MP4 / M4A / MOV / WAV / AAC 等）转成
-/// AMR-NB / AMR-WB（.amr）或 SILK v3（.aud，微信 / QQ 语音格式）。
+/// AMR-NB / AMR-WB（.amr）、SILK v3（.aud，微信 / QQ 语音格式）
+/// 或 AAC（.m4a，高保真）。
 @interface AudioConverter : NSObject
 
-/// 输出文件扩展名：amr / aud
+/// 输出文件扩展名：amr / aud / m4a
 + (NSString *)fileExtensionForFormat:(AudioOutputFormat)format
     NS_SWIFT_NAME(fileExtension(for:));
 

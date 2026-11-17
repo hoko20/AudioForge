@@ -28,6 +28,7 @@ static int AudioSampleRate(AudioOutputFormat format) {
         case AudioOutputFormatNB: return 8000;
         case AudioOutputFormatWB: return 16000;
         case AudioOutputFormatSilk:  return 24000;
+        case AudioOutputFormatM4A:   return 44100;
     }
     return 8000;
 }
@@ -48,20 +49,21 @@ static void AudioWriteHeader(NSFileHandle *handle, AudioOutputFormat format) {
         case AudioOutputFormatSilk:
             [handle writeData:[NSData dataWithBytes:silkHeader length:sizeof(silkHeader)]];
             break;
+        case AudioOutputFormatM4A:
+            break;
     }
 }
 
-/// SILK v3 音质档位：码率越高越容易进入 24kHz（SWB）内部带宽，音乐类素材也需要更高码率。
+/// SILK 规范码率范围是 6–40 kbps；超过 30 kbps 才会进入 24 kHz（SWB）内部带宽。
 /// 依次尝试，编码器不接受就降档；全部失败才报错。
 static BOOL AudioInitSilkEncoder(AudioConverterContext *ctx, NSString **message) {
     static const struct {
         SKP_int bitRate;
         SKP_int complexity;
     } presets[] = {
-        {64000, 10},
-        {48000, 10},
-        {40000, 8},
-        {32000, 6},
+        {40000, 10},
+        {36000, 10},
+        {32000, 8},
         {25000, 2},
     };
 
@@ -197,10 +199,21 @@ static BOOL AudioEncodeFrame(AudioConverterContext *ctx, NSFileHandle *handle,
 
 #pragma mark - AudioConverter
 
+@interface AudioConverter ()
++ (BOOL)convertM4AAtURL:(NSURL *)inputURL
+                  toURL:(NSURL *)outputURL
+               progress:(nullable AudioProgressBlock)progress
+                  error:(NSError *_Nullable *_Nullable)error;
+@end
+
 @implementation AudioConverter
 
 + (NSString *)fileExtensionForFormat:(AudioOutputFormat)format {
-    return format == AudioOutputFormatSilk ? @"aud" : @"amr";
+    switch (format) {
+        case AudioOutputFormatSilk: return @"aud";
+        case AudioOutputFormatM4A:  return @"m4a";
+        default:                    return @"amr";
+    }
 }
 
 + (BOOL)convertMediaAtURL:(NSURL *)inputURL
@@ -208,6 +221,9 @@ static BOOL AudioEncodeFrame(AudioConverterContext *ctx, NSFileHandle *handle,
                    format:(AudioOutputFormat)format
                  progress:(AudioProgressBlock)progress
                     error:(NSError **)error {
+    if (format == AudioOutputFormatM4A) {
+        return [self convertM4AAtURL:inputURL toURL:outputURL progress:progress error:error];
+    }
     AVURLAsset *asset = [AVURLAsset URLAssetWithURL:inputURL options:nil];
 
     AVAssetTrack *track = [[asset tracksWithMediaType:AVMediaTypeAudio] firstObject];
@@ -343,6 +359,142 @@ static BOOL AudioEncodeFrame(AudioConverterContext *ctx, NSFileHandle *handle,
         [manager removeItemAtURL:outputURL error:nil];
         [self fill:error code:AudioConverterErrorReader
            message:@"没有解出任何音频数据，可能是纯视频（无音轨）或格式不被支持"];
+        return NO;
+    }
+
+    if (progress) progress(1.0);
+    return YES;
+}
+
+/// AAC（.m4a）高保真导出：解码成 44.1kHz / 16bit PCM 后用系统 AAC 编码器
+/// 以 256 kbps 立体声重新封装，音质接近原文件。
++ (BOOL)convertM4AAtURL:(NSURL *)inputURL
+                  toURL:(NSURL *)outputURL
+               progress:(AudioProgressBlock)progress
+                  error:(NSError **)error {
+    AVURLAsset *asset = [AVURLAsset URLAssetWithURL:inputURL options:nil];
+    AVAssetTrack *track = [[asset tracksWithMediaType:AVMediaTypeAudio] firstObject];
+    if (!track) {
+        [self fill:error code:AudioConverterErrorNoAudioTrack message:@"这个文件里没有可用的音轨"];
+        return NO;
+    }
+
+    NSError *readerError = nil;
+    AVAssetReader *reader = [[AVAssetReader alloc] initWithAsset:asset error:&readerError];
+    if (!reader) {
+        [self fill:error code:AudioConverterErrorReader
+           message:readerError.localizedDescription ?: @"无法读取该文件"];
+        return NO;
+    }
+
+    const int sampleRate = 44100;
+    NSDictionary *readSettings = @{
+        AVFormatIDKey: @(kAudioFormatLinearPCM),
+        AVSampleRateKey: @(sampleRate),
+        AVNumberOfChannelsKey: @2,
+        AVLinearPCMBitDepthKey: @16,
+        AVLinearPCMIsFloatKey: @NO,
+        AVLinearPCMIsBigEndianKey: @NO,
+        AVLinearPCMIsNonInterleaved: @NO,
+    };
+
+    AVAssetReaderTrackOutput *output =
+        [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:readSettings];
+    output.alwaysCopiesSampleData = NO;
+    if (![reader canAddOutput:output]) {
+        // 个别纯单声道 / 多声道素材不允许直接升混，退回单声道
+        readSettings = @{
+            AVFormatIDKey: @(kAudioFormatLinearPCM),
+            AVSampleRateKey: @(sampleRate),
+            AVNumberOfChannelsKey: @1,
+            AVLinearPCMBitDepthKey: @16,
+            AVLinearPCMIsFloatKey: @NO,
+            AVLinearPCMIsBigEndianKey: @NO,
+            AVLinearPCMIsNonInterleaved: @NO,
+        };
+        output = [[AVAssetReaderTrackOutput alloc] initWithTrack:track outputSettings:readSettings];
+        output.alwaysCopiesSampleData = NO;
+        if (![reader canAddOutput:output]) {
+            [self fill:error code:AudioConverterErrorReader message:@"不支持这个文件的音频格式"];
+            return NO;
+        }
+    }
+    [reader addOutput:output];
+
+    NSFileManager *manager = [NSFileManager defaultManager];
+    [manager removeItemAtURL:outputURL error:nil];
+
+    NSError *writerError = nil;
+    AVAssetWriter *writer = [[AVAssetWriter alloc] initWithURL:outputURL
+                                                      fileType:AVFileTypeAppleM4A
+                                                         error:&writerError];
+    if (!writer) {
+        [self fill:error code:AudioConverterErrorFile
+           message:writerError.localizedDescription ?: @"无法创建输出文件"];
+        return NO;
+    }
+
+    const int channels = [readSettings[AVNumberOfChannelsKey] intValue];
+    NSDictionary *writeSettings = @{
+        AVFormatIDKey: @(kAudioFormatMPEG4AAC),
+        AVSampleRateKey: @(sampleRate),
+        AVNumberOfChannelsKey: @(channels),
+        AVEncoderBitRateKey: @(channels > 1 ? 256000 : 128000),
+        AVEncoderAudioQualityKey: @(AVAudioQualityMax),
+    };
+    AVAssetWriterInput *input =
+        [[AVAssetWriterInput alloc] initWithMediaType:AVMediaTypeAudio outputSettings:writeSettings];
+    input.expectsMediaDataInRealTime = NO;
+    if (![writer canAddInput:input]) {
+        [self fill:error code:AudioConverterErrorEncoder message:@"系统 AAC 编码器不可用"];
+        return NO;
+    }
+    [writer addInput:input];
+
+    if (![reader startReading] || ![writer startWriting]) {
+        [self fill:error code:AudioConverterErrorReader
+           message:reader.error.localizedDescription ?: writer.error.localizedDescription ?: @"转换启动失败"];
+        return NO;
+    }
+    [writer startSessionAtSourceTime:kCMTimeZero];
+
+    const double duration = CMTimeGetSeconds(asset.duration);
+    while (reader.status == AVAssetReaderStatusReading) {
+        @autoreleasepool {
+            CMSampleBufferRef sample = [output copyNextSampleBuffer];
+            if (!sample) break;
+
+            while (!input.isReadyForMoreMediaData && writer.status == AVAssetWriterStatusWriting) {
+                [NSThread sleepForTimeInterval:0.002];
+            }
+            if (writer.status != AVAssetWriterStatusWriting || ![input appendSampleBuffer:sample]) {
+                CFRelease(sample);
+                break;
+            }
+
+            if (progress && duration > 0) {
+                const double stamp = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample));
+                if (isfinite(stamp) && stamp >= 0) {
+                    progress(MIN(1.0, stamp / duration));
+                }
+            }
+            CFRelease(sample);
+        }
+    }
+
+    [input markAsFinished];
+    dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+    [writer finishWritingWithCompletionHandler:^{
+        dispatch_semaphore_signal(semaphore);
+    }];
+    dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+
+    BOOL failed = writer.status != AVAssetWriterStatusCompleted
+        || reader.status == AVAssetReaderStatusFailed;
+    if (failed) {
+        [manager removeItemAtURL:outputURL error:nil];
+        [self fill:error code:AudioConverterErrorEncoder
+           message:writer.error.localizedDescription ?: reader.error.localizedDescription ?: @"导出 m4a 失败"];
         return NO;
     }
 
