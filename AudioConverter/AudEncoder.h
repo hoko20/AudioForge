@@ -17,11 +17,13 @@ FOUNDATION_EXPORT NSString *const AUDEncoderErrorDomain;
 /// —— SILK v3（24 kHz 单声道 25 kbps，微信 / QQ 语音格式）。
 @interface AudEncoder : NSObject
 
+/// 注意：NSError** 参数按 Swift 约定导入为 throws，
+/// Swift 侧签名是 convertMedia(at:to:progress:)（不要把 error: 写进 Swift 名）。
 + (BOOL)convertMediaAtURL:(NSURL *)inputURL
                     toURL:(NSURL *)outputURL
                  progress:(nullable AUDProgressBlock)progress
                     error:(NSError *_Nullable *_Nullable)error
-    NS_SWIFT_NAME(convertMedia(at:to:progress:error:));
+    NS_SWIFT_NAME(convertMedia(at:to:progress:));
 
 @end
 

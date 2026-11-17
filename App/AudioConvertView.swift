@@ -259,14 +259,14 @@ struct AudioConvertView: View {
 
             DispatchQueue.main.async { busyText = "正在编码…" }
 
-            var encodeError: NSError?
             let started = Date()
-            let ok = AudEncoder.convertMedia(at: tempInput, to: tempOutput,
-                                             progress: { value in
-                DispatchQueue.main.async { progress = value }
-            }, error: &encodeError)
-            guard ok else {
-                finish(error: encodeError?.localizedDescription ?? "转换失败")
+            do {
+                try AudEncoder.convertMedia(at: tempInput, to: tempOutput,
+                                            progress: { value in
+                    DispatchQueue.main.async { progress = value }
+                })
+            } catch {
+                finish(error: error.localizedDescription)
                 return
             }
 
