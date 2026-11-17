@@ -15,6 +15,6 @@ xcuserdata/
 *.p8
 *.cer
 WQtool.xcodeproj/
-# 由 Scripts/build-silk.sh 在构建机上生成
+# 由 Scripts/build-audio-codecs.sh 在构建机上生成
 Vendor/lib/
 Vendor/include/
