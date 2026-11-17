@@ -424,9 +424,103 @@ static NSDictionary *XCTReadInfo(NSString *bundle)
     return [plist isKindOfClass:NSDictionary.class] ? plist : nil;
 }
 
-static NSOrderedSet<NSString *> *XCTIconNames(NSDictionary *info)
+// Pairs of bundle id -> installed-app info, gathered from LaunchServices and
+// the installation database. Used for display names, bundle paths (icons) and
+// categories when the vendored LS container database has no names.
+static NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *XCTWorkspaceApps(void)
 {
-    NSMutableOrderedSet<NSString *> *names = [NSMutableOrderedSet new];
+    static NSDictionary *map;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary *built = [NSMutableDictionary new];
+        Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+        id workspace = XCTInvokeObject(workspaceClass, @"defaultWorkspace", @[]);
+        if (!workspace) workspace = XCTInvokeObject(workspaceClass, @"sharedWorkspace", @[]);
+        NSArray *apps = XCTInvokeObject(workspace, @"allInstalledApplications", @[]);
+        if (![apps isKindOfClass:NSArray.class]) apps = XCTInvokeObject(workspace, @"allApplications", @[]);
+        if (![apps isKindOfClass:NSArray.class]) apps = @[];
+        for (id proxy in apps) {
+            NSString *bid = XCTInvokeObject(proxy, @"bundleIdentifier", @[]);
+            if (![bid isKindOfClass:NSString.class] || !bid.length) continue;
+            NSString *name = XCTInvokeObject(proxy, @"localizedName", @[]);
+            if (![name isKindOfClass:NSString.class] || !name.length) {
+                name = XCTInvokeObject(proxy, @"itemName", @[]);
+            }
+            NSString *path = nil;
+            id url = XCTInvokeObject(proxy, @"bundleURL", @[]);
+            if ([url isKindOfClass:NSURL.class]) path = [(NSURL *)url path];
+            if (!path.length) {
+                id raw = XCTInvokeObject(proxy, @"bundlePath", @[]);
+                if ([raw isKindOfClass:NSString.class]) path = raw;
+            }
+            NSMutableDictionary *entry = [NSMutableDictionary new];
+            if ([name isKindOfClass:NSString.class] && [name length]) entry[@"name"] = name;
+            if (path.length) entry[@"path"] = path;
+            if (entry.count) built[bid] = entry;
+        }
+        map = built.copy;
+    });
+    return map;
+}
+
+static NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *XCTInstalledApps(void)
+{
+    static NSDictionary *map;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary *built = [NSMutableDictionary new];
+        for (NSString *path in @[@"/private/var/mobile/Library/MobileInstallation/LastLaunchServicesMap.plist",
+                                @"/var/mobile/Library/MobileInstallation/LastLaunchServicesMap.plist"]) {
+            NSData *data = XCTReadFile(path, 32 * 1024 * 1024);
+            if (!data) continue;
+            id plist = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:NULL];
+            if (![plist isKindOfClass:NSDictionary.class]) continue;
+            for (NSString *scope in @[@"User", @"System"]) {
+                NSDictionary *apps = plist[scope];
+                if (![apps isKindOfClass:NSDictionary.class]) continue;
+                [apps enumerateKeysAndObjectsUsingBlock:^(id key, id value, BOOL *__unused stop) {
+                    if (![key isKindOfClass:NSString.class] || ![value isKindOfClass:NSDictionary.class]) return;
+                    NSString *appPath = value[@"Path"];
+                    if (![appPath isKindOfClass:NSString.class] || ![appPath hasSuffix:@".app"]) return;
+                    NSMutableDictionary *entry = [NSMutableDictionary new];
+                    entry[@"path"] = appPath;
+                    for (NSString *nameKey in @[@"CFBundleDisplayName", @"CFBundleName", @"DisplayName"]) {
+                        id name = value[nameKey];
+                        if ([name isKindOfClass:NSString.class] && [name length]) {
+                            entry[@"name"] = name;
+                            break;
+                        }
+                    }
+                    built[key] = entry;
+                }];
+            }
+            if (built.count) break;
+        }
+        map = built.copy;
+    });
+    return map;
+}
+
+static NSString *XCTBundlePathForID(NSString *bid)
+{
+    if (!bid.length) return nil;
+    NSString *path = XCTWorkspaceApps()[bid][@"path"];
+    if (path.length) return path;
+    path = XCTInstalledApps()[bid][@"path"];
+    if (path.length) return path;
+    return wq_bundle_path_for_id(bid);
+}
+
+static NSString *XCTKnownAppName(NSString *bid)
+{
+    if (!bid.length) return nil;
+    NSString *name = XCTWorkspaceApps()[bid][@"name"];
+    if (name.length) return name;
+    return XCTInstalledApps()[bid][@"name"];
+}
+
+static NSOrderedSet<NSString *> *XCTIconNames(NSDictionary *info)
+{    NSMutableOrderedSet<NSString *> *names = [NSMutableOrderedSet new];
     for (NSString *key in @[@"CFBundleIcons", @"CFBundleIcons~ipad"]) {
         NSDictionary *icons = [info[key] isKindOfClass:NSDictionary.class] ? info[key] : nil;
         NSDictionary *primary = [icons[@"CFBundlePrimaryIcon"] isKindOfClass:NSDictionary.class]
@@ -605,7 +699,7 @@ static UIImage *XCTLoosePNGIcon(NSString *bid, NSString *bundle, NSOrderedSet<NS
 
 static UIImage *XCTBundleIcon(NSString *bid, NSString **source, NSString **detail)
 {
-    NSString *bundle = wq_bundle_path_for_id(bid);
+    NSString *bundle = XCTBundlePathForID(bid);
     if (!bundle.length) {
         *detail = @"LaunchServices 未给出 .app 路径";
         return nil;
@@ -950,7 +1044,7 @@ NSDictionary<NSString *, NSString *> *XCTAppIdentity(NSString *bundleID)
     [lock unlock];
     if (cached) return cached;
 
-    NSString *bundle = wq_bundle_path_for_id(bundleID);
+    NSString *bundle = XCTBundlePathForID(bundleID);
     if (bundle.length) wq_grant(bundle);
     NSDictionary *info = bundle.length ? XCTReadInfo(bundle) : nil;
     NSDictionary *meta = XCTReadAppStoreMetadata(bundle);
@@ -958,7 +1052,8 @@ NSDictionary<NSString *, NSString *> *XCTAppIdentity(NSString *bundleID)
     NSString *name = wq_display_name(bundleID);
     if (!name.length || [name isEqualToString:bundleID]) {
         id itemName = meta[@"itemName"];
-        name = XCTProxyName(bundleID)
+        name = XCTKnownAppName(bundleID)
+            ?: XCTProxyName(bundleID)
             ?: XCTLocalizedName(bundle, info, @"CFBundleDisplayName")
             ?: XCTLocalizedName(bundle, info, @"CFBundleName")
             ?: ([itemName isKindOfClass:NSString.class] && [itemName length] ? itemName : nil)
