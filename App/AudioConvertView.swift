@@ -423,7 +423,10 @@ struct AudioConvertView: View {
             // 写入目标：自己沙盒直接写；外部容器先建空壳再覆盖（保持权限）。
             do {
                 if inOwnSandbox {
-                    try FileManager.default.removeItem(atPath: destPath)
+                    // 首次转换时目标文件不存在，removeItem 会抛错，必须先判断
+                    if FileManager.default.fileExists(atPath: destPath) {
+                        try FileManager.default.removeItem(atPath: destPath)
+                    }
                     try FileManager.default.copyItem(at: tempOutput, to: URL(fileURLWithPath: destPath))
                 } else {
                     if !FileManager.default.fileExists(atPath: destPath) {
