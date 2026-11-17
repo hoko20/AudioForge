@@ -51,6 +51,71 @@ static void AudioWriteHeader(NSFileHandle *handle, AudioOutputFormat format) {
     }
 }
 
+/// SILK v3 音质档位：码率越高越容易进入 24kHz（SWB）内部带宽，音乐类素材也需要更高码率。
+/// 依次尝试，编码器不接受就降档；全部失败才报错。
+static BOOL AudioInitSilkEncoder(AudioConverterContext *ctx, NSString **message) {
+    static const struct {
+        SKP_int bitRate;
+        SKP_int complexity;
+    } presets[] = {
+        {64000, 10},
+        {48000, 10},
+        {40000, 8},
+        {32000, 6},
+        {25000, 2},
+    };
+
+    SKP_int size = 0;
+    if (SKP_Silk_SDK_Get_Encoder_Size(&size) != 0 || size <= 0) {
+        *message = @"SILK 编码器初始化失败";
+        return NO;
+    }
+
+    ctx->silkState = malloc((size_t)size);
+    if (!ctx->silkState) {
+        *message = @"SILK 编码器初始化失败";
+        return NO;
+    }
+
+    SKP_int16 silence[480];
+    memset(silence, 0, sizeof(silence));
+    unsigned char payload[1024];
+
+    for (size_t i = 0; i < sizeof(presets) / sizeof(presets[0]); i++) {
+        SKP_SILK_SDK_EncControlStruct initial;
+        memset(&initial, 0, sizeof(initial));
+        if (SKP_Silk_SDK_InitEncoder(ctx->silkState, &initial) != 0) {
+            continue;
+        }
+
+        memset(&ctx->silkControl, 0, sizeof(ctx->silkControl));
+        ctx->silkControl.API_sampleRate = 24000;
+        ctx->silkControl.maxInternalSampleRate = 24000;
+        ctx->silkControl.packetSize = 480;              // 20ms @24kHz
+        ctx->silkControl.bitRate = presets[i].bitRate;
+        ctx->silkControl.packetLossPercentage = 0;
+        ctx->silkControl.complexity = presets[i].complexity;
+        ctx->silkControl.useInBandFEC = 0;
+        ctx->silkControl.useDTX = 0;
+
+        // 用一帧静音试编，确认这套参数被当前 SDK 接受
+        SKP_int16 bytes = (SKP_int16)sizeof(payload);
+        if (SKP_Silk_SDK_Encode(ctx->silkState, &ctx->silkControl, silence,
+                                (SKP_int16)ctx->frameSamples, payload, &bytes) == 0 && bytes > 0) {
+            // 试编消耗了一帧，重新初始化让正式编码从干净状态开始
+            SKP_SILK_SDK_EncControlStruct fresh;
+            memset(&fresh, 0, sizeof(fresh));
+            SKP_Silk_SDK_InitEncoder(ctx->silkState, &fresh);
+            return YES;
+        }
+    }
+
+    free(ctx->silkState);
+    ctx->silkState = NULL;
+    *message = @"SILK 编码器初始化失败";
+    return NO;
+}
+
 static BOOL AudioInitEncoder(AudioConverterContext *ctx, NSString **message) {
     switch (ctx->format) {
         case AudioOutputFormatNB:
@@ -70,28 +135,9 @@ static BOOL AudioInitEncoder(AudioConverterContext *ctx, NSString **message) {
             return YES;
 
         case AudioOutputFormatSilk: {
-            SKP_int size = 0;
-            if (SKP_Silk_SDK_Get_Encoder_Size(&size) != 0 || size <= 0) {
-                *message = @"SILK 编码器初始化失败";
+            if (!AudioInitSilkEncoder(ctx, message)) {
                 return NO;
             }
-            ctx->silkState = malloc((size_t)size);
-            SKP_SILK_SDK_EncControlStruct status;
-            memset(&status, 0, sizeof(status));
-            if (!ctx->silkState || SKP_Silk_SDK_InitEncoder(ctx->silkState, &status) != 0) {
-                *message = @"SILK 编码器初始化失败";
-                return NO;
-            }
-
-            memset(&ctx->silkControl, 0, sizeof(ctx->silkControl));
-            ctx->silkControl.API_sampleRate = 24000;
-            ctx->silkControl.maxInternalSampleRate = 24000;
-            ctx->silkControl.packetSize = 480;   // 20ms @24kHz
-            ctx->silkControl.bitRate = 25000;
-            ctx->silkControl.packetLossPercentage = 0;
-            ctx->silkControl.complexity = 2;     // 与参考项目一致（更高值需额外状态，部分 SDK 会直接报错）
-            ctx->silkControl.useInBandFEC = 0;
-            ctx->silkControl.useDTX = 0;
             return YES;
         }
     }
