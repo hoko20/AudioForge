@@ -3,26 +3,12 @@ import UIKit
 
 struct ToolsTab: View {
     @EnvironmentObject private var bookmarks: BookmarkStore
-    @EnvironmentObject private var files: FileListModel
     @State private var navPath = NavigationPath()
     @State private var jumpPath = ""
     @State private var showAdd = false
     @State private var editing = false
     @State private var renaming: Bookmark?
-    @State private var checks: [String: String] = [:]
-    @State private var checksExpanded = false
-    @State private var checking = false
-    @State private var showLog = false
     @State private var notice: String?
-    @State private var iconRows: [IconProbeRow] = []
-    @State private var probingIcons = false
-    @State private var iconToken = 0
-
-    private let checkOrder = [
-        "App Group", "系统版本", "系统支持", "完整扫描", "上次扫描被拒",
-        "容器父目录", "LS 数据库", "LS 记录", "应用名称库",
-        "上次枚举", "抽样容器", "可读取", "可识别", "被拒样本"
-    ]
 
     var body: some View {
         NavigationStack(path: $navPath) {
@@ -227,116 +213,6 @@ struct ToolsTab: View {
                         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                     }
 
-                    // MARK: 诊断
-                    SectionLabel(text: "诊断")
-                    CardBox {
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack {
-                                Button {
-                                    runSelfCheck()
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: "stethoscope")
-                                        Text("运行授权自检")
-                                        Spacer()
-                                        if checking { ProgressView() }
-                                    }
-                                    .font(.system(size: 15, weight: .medium))
-                                    .foregroundStyle(Palette.ink)
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(checking)
-                            }
-
-                            if !checks.isEmpty {
-                                ThinSeparator()
-
-                                Button {
-                                    withAnimation(.easeInOut(duration: 0.2)) { checksExpanded.toggle() }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Text("自检结果 · \(checks.count) 项")
-                                            .font(.system(size: 13, weight: .medium))
-                                            .foregroundStyle(Palette.secondary)
-                                        Spacer()
-                                        Image(systemName: "chevron.down")
-                                            .font(.system(size: 11, weight: .semibold))
-                                            .foregroundStyle(Palette.tertiary)
-                                            .rotationEffect(.degrees(checksExpanded ? 180 : 0))
-                                    }
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-
-                                if checksExpanded {
-                                    ForEach(checkOrder, id: \.self) { key in
-                                        if let value = checks[key] {
-                                            VStack(alignment: .leading, spacing: 2) {
-                                                Text(key).font(.system(size: 11)).foregroundStyle(Palette.tertiary)
-                                                Text(value).font(.system(size: 12)).foregroundStyle(Palette.ink)
-                                                    .textSelection(.enabled)
-                                            }
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                        }
-                                    }
-                                }
-                            }
-
-                            ThinSeparator()
-                            Button {
-                                showLog = true
-                            } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "doc.text.magnifyingglass")
-                                    Text("查看原始访问日志")
-                                }
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(Palette.ink)
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-
-                    Text("自检会抽样尝试打开其它应用容器；显示 NO TOKEN 多为签名丢失 App Group 或缓存交换状态损坏。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.tertiary)
-
-                    // MARK: 图标来源
-                    SectionLabel(text: "图标来源")
-                    CardBox(radius: 20, padding: 0) {
-                        VStack(spacing: 0) {
-                            Button {
-                                probeIcons()
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "app.badge.checkmark")
-                                        .font(.system(size: 15, weight: .medium))
-                                        .foregroundStyle(Palette.ink)
-                                        .frame(width: 22)
-                                    Text("重新解析前 12 个应用图标")
-                                        .font(.system(size: 15, weight: .medium))
-                                        .foregroundStyle(Palette.ink)
-                                    Spacer(minLength: 6)
-                                    if probingIcons { ProgressView() }
-                                }
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 12)
-                            }
-                            .buttonStyle(.plain)
-                            .disabled(probingIcons)
-
-                            ForEach(iconRows) { row in
-                                ThinSeparator().padding(.leading, 16)
-                                IconProbeRowView(row: row, token: iconToken)
-                            }
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    }
-
-                    Text("iOS 26 会拒绝第三方进程的 UIKit 图标请求，真实图标优先从应用的 Assets.car 解析。全部显示「占位图」时，点「查看原始访问日志」看 A/B/C 三层的失败原因。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.tertiary)
-
                     if let notice {
                         InlineNotice(text: notice)
                     }
@@ -360,9 +236,6 @@ struct ToolsTab: View {
             }
             .sheet(item: $renaming) { item in
                 BookmarkEditor(mode: .rename(item))
-            }
-            .sheet(isPresented: $showLog) {
-                DiagnosticsView(text: XCTContainerBridge.diagnostics())
             }
         }
     }
@@ -425,85 +298,6 @@ struct ToolsTab: View {
             notice = "该路径已在收藏夹中"
         }
         navPath.append(PathRoute(path: path, title: title ?? (path as NSString).lastPathComponent))
-    }
-
-    private func runSelfCheck() {
-        guard !checking else { return }
-        checking = true
-        DispatchQueue.global(qos: .userInitiated).async {
-            let report = XCTContainerBridge.runSelfCheck()
-            DispatchQueue.main.async {
-                self.checks = report
-                self.checking = false
-                if !report.isEmpty {
-                    withAnimation(.easeInOut(duration: 0.2)) { self.checksExpanded = true }
-                }
-            }
-        }
-    }
-
-    private func probeIcons() {
-        guard !probingIcons else { return }
-        probingIcons = true
-        let apps = Array(files.apps.prefix(12))
-        let ids = apps.map(\.id)
-        DispatchQueue.global(qos: .userInitiated).async {
-            let raw = XCTContainerBridge.probeIcons(ids)
-            let rows = raw.map { item -> IconProbeRow in
-                let id = item["id"] ?? ""
-                return IconProbeRow(id: id,
-                                    name: apps.first { $0.id == id }?.name ?? id,
-                                    source: item["source"] ?? "未知",
-                                    detail: item["detail"] ?? "")
-            }
-            DispatchQueue.main.async {
-                IconCache.shared.invalidateAll()
-                self.iconRows = rows
-                self.iconToken += 1
-                self.probingIcons = false
-                self.notice = rows.isEmpty ? "应用列表为空，先到「文件」页刷新一次。" : "已重新解析 \(rows.count) 个应用的图标。"
-            }
-        }
-    }
-}
-
-// MARK: - Icon diagnostics rows
-
-struct IconProbeRow: Identifiable {
-    let id: String
-    let name: String
-    let source: String
-    let detail: String
-
-    var isPlaceholder: Bool { source == "占位图" }
-}
-
-private struct IconProbeRowView: View {
-    let row: IconProbeRow
-    let token: Int
-
-    var body: some View {
-        HStack(spacing: 12) {
-            AppIconView(bundleID: row.id, size: 36, refreshToken: token)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(row.name)
-                    .font(.system(size: 14, weight: .medium))
-                    .foregroundStyle(Palette.ink)
-                    .lineLimit(1)
-                Text(row.source)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(row.isPlaceholder ? Palette.warning : Palette.secondary)
-                    .lineLimit(1)
-                Text(row.detail)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(Palette.tertiary)
-                    .lineLimit(2)
-                    .textSelection(.enabled)
-            }
-            Spacer(minLength: 4)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 }
 

@@ -1,5 +1,4 @@
 import SwiftUI
-import UIKit
 
 struct SettingsTab: View {
     @EnvironmentObject private var settings: AccessSettings
@@ -10,13 +9,40 @@ struct SettingsTab: View {
     @State private var busyAction: String?
     @State private var alertMessage: String?
     @State private var confirmClearBookmarks = false
+    @State private var checks: [String: String] = [:]
+    @State private var checking = false
+
+    /// 与自检报告顺序一致；App Group / 系统版本 已在上方独立行显示，不重复。
+    private let checkOrder = [
+        "系统支持", "完整扫描", "上次扫描被拒",
+        "容器父目录", "LS 数据库", "LS 记录", "应用名称库",
+        "上次枚举", "抽样容器", "可读取", "可识别", "被拒样本"
+    ]
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     // MARK: 运行环境
-                    SectionLabel(text: "运行环境")
+                    HStack(spacing: 10) {
+                        SectionLabel(text: "运行环境")
+                        Spacer()
+                        if checking {
+                            ProgressView()
+                                .controlSize(.small)
+                                .tint(Palette.ink)
+                                .frame(width: 34, height: 34)
+                                .background(Palette.card, in: Circle())
+                        } else {
+                            HeaderIcon(system: "arrow.clockwise") {
+                                refreshEnvironment()
+                            }
+                        }
+                        HeaderIcon(system: "doc.text") {
+                            showLog = true
+                        }
+                    }
+
                     CardBox(radius: 20, padding: 0) {
                         VStack(spacing: 0) {
                             InfoRow(title: "App Group", value: files.appGroup)
@@ -28,11 +54,18 @@ struct SettingsTab: View {
                             InfoRow(title: "Bundle ID", value: Bundle.main.bundleIdentifier ?? "未知")
                             ThinSeparator().padding(.leading, 16)
                             InfoRow(title: "版本", value: appVersion)
+
+                            ForEach(checkOrder, id: \.self) { key in
+                                if let value = checks[key] {
+                                    ThinSeparator().padding(.leading, 16)
+                                    InfoRow(title: key, value: value)
+                                }
+                            }
                         }
                         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                     }
 
-                    Text("App Group 由签名注入。显示「未提供」说明重签工具丢弃了 com.apple.security.application-groups，沙盒扩展无法签发。")
+                    Text("App Group 由签名注入。显示「未提供」说明重签工具丢弃了 com.apple.security.application-groups。下方自检项抽样尝试打开其它应用容器，NO TOKEN 多为签名丢失 App Group 或缓存交换状态损坏。")
                         .font(.system(size: 12))
                         .foregroundStyle(Palette.tertiary)
 
@@ -57,32 +90,6 @@ struct SettingsTab: View {
                             ActionRow(title: "停止当前扫描", system: "stop.circle", busy: busyAction) {
                                 XCTContainerBridge.stopFullScan()
                                 alertMessage = "已请求停止正在进行的完整扫描。"
-                            }
-                        }
-                    }
-
-                    // MARK: 应用图标
-                    SectionLabel(text: "应用图标")
-                    CardBox {
-                        VStack(alignment: .leading, spacing: 16) {
-                            Toggle(isOn: $settings.catalogIcons) {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text("解析 Assets.car 获取真实图标")
-                                        .font(.system(size: 15, weight: .medium))
-                                        .foregroundStyle(Palette.ink)
-                                    Text("iOS 26 拒绝第三方进程的 UIKit 图标请求。开启后通过 CoreUI 从应用安装包内的 Assets.car 读取 AppIcon；若某个应用的资源目录导致崩溃，可关闭此项。")
-                                        .font(.system(size: 12))
-                                        .foregroundStyle(Palette.secondary)
-                                }
-                            }
-                            .tint(Palette.ink)
-
-                            ThinSeparator()
-
-                            ActionRow(title: "清除图标缓存", system: "trash", busy: nil) {
-                                XCTContainerBridge.clearIconCache()
-                                IconCache.shared.invalidateAll()
-                                alertMessage = "图标缓存已清空。回到「文件」页重新打开列表即可生效。"
                             }
                         }
                     }
@@ -188,26 +195,6 @@ struct SettingsTab: View {
                         }
                     }
 
-                    // MARK: 日志
-                    SectionLabel(text: "日志")
-                    CardBox(radius: 20, padding: 0) {
-                        VStack(spacing: 0) {
-                            ActionRow(title: "查看原始访问日志", system: "doc.text", busy: nil) {
-                                showLog = true
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                            ThinSeparator().padding(.leading, 16)
-                            ActionRow(title: "复制日志", system: "doc.on.doc", busy: nil) {
-                                UIPasteboard.general.string = XCTContainerBridge.diagnostics()
-                                alertMessage = "日志已复制到剪贴板。"
-                            }
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    }
-
                     // MARK: 关于
                     SectionLabel(text: "关于")
                     CardBox {
@@ -228,6 +215,9 @@ struct SettingsTab: View {
             .background(Palette.background)
             .enableInteractivePop()
             .glassNavigationBar(title: "设置")
+            .onAppear {
+                if checks.isEmpty { refreshEnvironment() }
+            }
             .sheet(isPresented: $showLog) {
                 DiagnosticsView(text: XCTContainerBridge.diagnostics())
             }
@@ -249,6 +239,19 @@ struct SettingsTab: View {
     private var appVersion: String {
         let info = Bundle.main.infoDictionary
         return "\(info?["CFBundleShortVersionString"] as? String ?? "1.0") (\(info?["CFBundleVersion"] as? String ?? "1"))"
+    }
+
+    /// 重新跑一次授权自检，刷新「运行环境」里的自检项。
+    private func refreshEnvironment() {
+        guard !checking else { return }
+        checking = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let report = XCTContainerBridge.runSelfCheck()
+            DispatchQueue.main.async {
+                self.checks = report
+                self.checking = false
+            }
+        }
     }
 
     private func runOffMain(_ label: String, work: @escaping () -> String) {

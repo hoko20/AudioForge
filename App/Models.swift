@@ -163,7 +163,6 @@ final class BookmarkStore: ObservableObject {
 
 final class AccessSettings: ObservableObject {
     private let key = "SandboxAccess.fullScan.v1"
-    private let catalogKey = "SandboxAccess.catalogIcons.v1"
 
     @Published var fullScan: Bool {
         didSet {
@@ -172,21 +171,10 @@ final class AccessSettings: ObservableObject {
         }
     }
 
-    /// CoreUI extraction from Assets.car is what produces real icons on
-    /// iOS 26; it can be disabled if a malformed catalog causes a crash.
-    @Published var catalogIcons: Bool {
-        didSet {
-            UserDefaults.standard.set(catalogIcons, forKey: catalogKey)
-            XCTContainerBridge.setCatalogIconsEnabled(catalogIcons)
-        }
-    }
-
     init() {
         let defaults = UserDefaults.standard
         fullScan = defaults.object(forKey: key) as? Bool ?? true
-        catalogIcons = defaults.object(forKey: catalogKey) as? Bool ?? true
         XCTContainerBridge.setFullScanAllowed(fullScan)
-        XCTContainerBridge.setCatalogIconsEnabled(catalogIcons)
     }
 }
 
