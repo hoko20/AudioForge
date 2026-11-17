@@ -1,4 +1,4 @@
-#import "AudioPlayback.h"
+﻿#import "AudioPlayback.h"
 #import "interf_dec.h"
 #import "dec_if.h"
 #import "SKP_Silk_SDK_API.h"
@@ -92,7 +92,6 @@ static BOOL AudioDecodeSilk(NSData *data, NSFileHandle *handle, NSString **messa
     SKP_SILK_SDK_DecControlStruct control;
     memset(&control, 0, sizeof(control));
     control.API_sampleRate = 24000;
-    control.internalSampleRate = 24000;
 
     if (SKP_Silk_SDK_InitDecoder(decoder) != 0) {
         free(decoder);
@@ -198,7 +197,7 @@ static BOOL AudioDecodeAMRWB(NSData *data, NSFileHandle *handle, NSString **mess
 @implementation AudioPlayback
 
 + (BOOL)isDecodablePath:(NSString *)path {
-    NSString *ext = path.pathExtension.lowercased;
+    NSString *ext = path.pathExtension.lowercaseString;
     return [ext isEqualToString:@"aud"] || [ext isEqualToString:@"amr"];
 }
 
@@ -211,7 +210,7 @@ static BOOL AudioDecodeAMRWB(NSData *data, NSFileHandle *handle, NSString **mess
         return NO;
     }
 
-    NSString *ext = inputURL.pathExtension.lowercased;
+    NSString *ext = inputURL.pathExtension.lowercaseString;
     BOOL isSilk = [ext isEqualToString:@"aud"];
     NSString *message = nil;
     uint32_t sampleRate = isSilk ? 24000 : 8000;
