@@ -10,6 +10,7 @@ struct ToolsTab: View {
     @State private var editing = false
     @State private var renaming: Bookmark?
     @State private var checks: [String: String] = [:]
+    @State private var checksExpanded = false
     @State private var checking = false
     @State private var showLog = false
     @State private var notice: String?
@@ -28,72 +29,45 @@ struct ToolsTab: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     // MARK: 收藏夹
-                    HStack {
+                    HStack(spacing: 10) {
                         SectionLabel(text: "收藏夹 \(bookmarks.items.count)")
                         Spacer()
-                        Button {
-                            showAdd = true
-                        } label: {
-                            Image(systemName: "plus")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(Palette.ink)
+                        if !bookmarks.items.isEmpty {
+                            HeaderIcon(system: editing ? "checkmark" : "slider.horizontal.3") {
+                                editing.toggle()
+                            }
                         }
-                        .buttonStyle(.plain)
+                        HeaderIcon(system: "plus") {
+                            showAdd = true
+                        }
                     }
 
                     CardBox(radius: 20, padding: 0) {
-                        VStack(spacing: 0) {
-                            if bookmarks.items.isEmpty {
-                                VStack(spacing: 10) {
-                                    Image(systemName: "star")
-                                        .font(.system(size: 26, weight: .light))
-                                        .foregroundStyle(Palette.tertiary)
-                                    Text("还没有收藏。浏览目录时点星标，或用右上角 + 直接写入路径。")
-                                        .font(.system(size: 13))
-                                        .foregroundStyle(Palette.secondary)
-                                        .multilineTextAlignment(.center)
-                                }
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 32)
-                                .padding(.horizontal, 20)
-                            } else {
-                                ForEach(bookmarks.items) { item in
-                                    VStack(spacing: 0) {
-                                        HStack(spacing: 12) {
-                                            if editing {
-                                                BookmarkControls(item: item,
-                                                                 canMoveUp: (bookmarks.items.firstIndex(of: item) ?? 0) > 0,
-                                                                 rename: { renaming = item },
-                                                                 remove: { bookmarks.remove(id: item.id) },
-                                                                 moveUp: moveUp)
-                                            } else {
-                                                NavigationLink(value: PathRoute(path: item.path, title: item.title)) {
-                                                    BookmarkRow(item: item)
-                                                }
-                                                .buttonStyle(.plain)
-                                            }
-                                        }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 12)
-                                        .contextMenu {
-                                            Button {
-                                                UIPasteboard.general.string = item.path
-                                            } label: { Label("复制路径", systemImage: "doc.on.doc") }
-                                            Button {
-                                                renaming = item
-                                            } label: { Label("重命名", systemImage: "pencil") }
-                                            Button(role: .destructive) {
-                                                bookmarks.remove(id: item.id)
-                                            } label: { Label("删除", systemImage: "trash") }
-                                        }
-                                        if let lastID = bookmarks.items.last?.id, lastID != item.id {
-                                            ThinSeparator().padding(.leading, 16)
-                                        }
+                        if bookmarks.items.isEmpty {
+                            VStack(spacing: 10) {
+                                Image(systemName: "star")
+                                    .font(.system(size: 26, weight: .light))
+                                    .foregroundStyle(Palette.tertiary)
+                                Text("还没有收藏。浏览目录时点星标，或用「+」直接写入路径。")
+                                    .font(.system(size: 13))
+                                    .foregroundStyle(Palette.secondary)
+                                    .multilineTextAlignment(.center)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 32)
+                            .padding(.horizontal, 20)
+                        } else {
+                            ScrollView(.vertical, showsIndicators: bookmarks.items.count > 5) {
+                                VStack(spacing: 0) {
+                                    ForEach(bookmarks.items) { item in
+                                        bookmarkRow(item, isLast: bookmarks.items.last?.id == item.id)
                                     }
                                 }
                             }
+                            .frame(height: bookmarkListHeight)
+                            .scrollDisabled(bookmarks.items.count <= 5)
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                         }
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                     }
 
                     Text("收藏只保存路径与名称，不会复制目录内容。下次打开可直接跳转。")
@@ -158,6 +132,43 @@ struct ToolsTab: View {
                                         .font(.system(size: 15, weight: .medium))
                                         .foregroundStyle(Palette.ink)
                                     Text("编码为微信语音同格式（SILK v3）")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Palette.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 6)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Palette.tertiary)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    // MARK: 存储清理
+                    SectionLabel(text: "存储清理")
+                    CardBox(radius: 20, padding: 0) {
+                        NavigationLink {
+                            CacheCleanView()
+                        } label: {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Palette.placeholder)
+                                    Image(systemName: "trash.circle")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(Palette.ink)
+                                }
+                                .frame(width: 36, height: 36)
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("缓存清理")
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(Palette.ink)
+                                    Text("扫描并清空各应用的缓存、临时文件与日志")
                                         .font(.system(size: 12))
                                         .foregroundStyle(Palette.secondary)
                                         .lineLimit(1)
@@ -239,14 +250,34 @@ struct ToolsTab: View {
 
                             if !checks.isEmpty {
                                 ThinSeparator()
-                                ForEach(checkOrder, id: \.self) { key in
-                                    if let value = checks[key] {
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(key).font(.system(size: 11)).foregroundStyle(Palette.tertiary)
-                                            Text(value).font(.system(size: 12)).foregroundStyle(Palette.ink)
-                                                .textSelection(.enabled)
+
+                                Button {
+                                    withAnimation(.easeInOut(duration: 0.2)) { checksExpanded.toggle() }
+                                } label: {
+                                    HStack(spacing: 8) {
+                                        Text("自检结果 · \(checks.count) 项")
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(Palette.secondary)
+                                        Spacer()
+                                        Image(systemName: "chevron.down")
+                                            .font(.system(size: 11, weight: .semibold))
+                                            .foregroundStyle(Palette.tertiary)
+                                            .rotationEffect(.degrees(checksExpanded ? 180 : 0))
+                                    }
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+
+                                if checksExpanded {
+                                    ForEach(checkOrder, id: \.self) { key in
+                                        if let value = checks[key] {
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(key).font(.system(size: 11)).foregroundStyle(Palette.tertiary)
+                                                Text(value).font(.system(size: 12)).foregroundStyle(Palette.ink)
+                                                    .textSelection(.enabled)
+                                            }
+                                            .frame(maxWidth: .infinity, alignment: .leading)
                                         }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                 }
                             }
@@ -318,17 +349,6 @@ struct ToolsTab: View {
             .background(Palette.background)
             .enableInteractivePop()
             .glassNavigationBar(title: "工具")
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        editing.toggle()
-                    } label: {
-                        Image(systemName: editing ? "checkmark" : "slider.horizontal.3")
-                            .font(.system(size: 17, weight: .medium))
-                            .foregroundStyle(Palette.ink)
-                    }
-                }
-            }
             .navigationDestination(for: PathRoute.self) { route in
                 DirectoryView(route: route)
             }
@@ -344,6 +364,49 @@ struct ToolsTab: View {
             .sheet(isPresented: $showLog) {
                 DiagnosticsView(text: XCTContainerBridge.diagnostics())
             }
+        }
+    }
+
+    /// 收藏夹固定窗口：最多完整显示 5 行，超出后区域内上下滚动。
+    private var bookmarkListHeight: CGFloat {
+        let visible = min(bookmarks.items.count, 5)
+        return CGFloat(visible) * 60 + CGFloat(max(visible - 1, 0))
+    }
+
+    @ViewBuilder
+    private func bookmarkRow(_ item: Bookmark, isLast: Bool) -> some View {
+        VStack(spacing: 0) {
+            Group {
+                if editing {
+                    BookmarkControls(item: item,
+                                     canMoveUp: (bookmarks.items.firstIndex(of: item) ?? 0) > 0,
+                                     rename: { renaming = item },
+                                     remove: { bookmarks.remove(id: item.id) },
+                                     moveUp: moveUp)
+                } else {
+                    NavigationLink(value: PathRoute(path: item.path, title: item.title)) {
+                        BookmarkRow(item: item)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .frame(height: 60)
+            .padding(.horizontal, 16)
+
+            if !isLast {
+                ThinSeparator().padding(.leading, 16)
+            }
+        }
+        .contextMenu {
+            Button {
+                UIPasteboard.general.string = item.path
+            } label: { Label("复制路径", systemImage: "doc.on.doc") }
+            Button {
+                renaming = item
+            } label: { Label("重命名", systemImage: "pencil") }
+            Button(role: .destructive) {
+                bookmarks.remove(id: item.id)
+            } label: { Label("删除", systemImage: "trash") }
         }
     }
 
@@ -372,6 +435,9 @@ struct ToolsTab: View {
             DispatchQueue.main.async {
                 self.checks = report
                 self.checking = false
+                if !report.isEmpty {
+                    withAnimation(.easeInOut(duration: 0.2)) { self.checksExpanded = true }
+                }
             }
         }
     }
