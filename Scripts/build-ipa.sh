@@ -16,6 +16,9 @@ echo "== toolchain =="
 xcodebuild -version
 xcrun --sdk iphoneos --show-sdk-version
 
+echo "== vendor: build SILK static lib (.aud encoder) =="
+bash "$ROOT/Scripts/build-silk.sh"
+
 echo "== xcodebuild =="
 BUILD_ARGS=(
   -project "$ROOT/WQtool.xcodeproj"

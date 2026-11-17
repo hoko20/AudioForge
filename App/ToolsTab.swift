@@ -137,6 +137,43 @@ struct ToolsTab: View {
                         .buttonStyle(.plain)
                     }
 
+                    // MARK: 音频转换
+                    SectionLabel(text: "音频转换")
+                    CardBox(radius: 20, padding: 0) {
+                        NavigationLink {
+                            AudioConvertView()
+                        } label: {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                        .fill(Palette.placeholder)
+                                    Image(systemName: "waveform.badge.plus")
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(Palette.ink)
+                                }
+                                .frame(width: 36, height: 36)
+
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text("MP3 / MP4 转 .aud")
+                                        .font(.system(size: 15, weight: .medium))
+                                        .foregroundStyle(Palette.ink)
+                                    Text("编码为微信语音同格式（SILK v3）")
+                                        .font(.system(size: 12))
+                                        .foregroundStyle(Palette.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 6)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(Palette.tertiary)
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     // MARK: 快速跳转
                     SectionLabel(text: "快速跳转")
                     CardBox {
