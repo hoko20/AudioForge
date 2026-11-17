@@ -30,6 +30,8 @@ struct AudioConvertView: View {
     @State private var renameTarget: OutputFile?
     @State private var renameText = ""
     @State private var showRename = false
+    @State private var noticeToken = UUID()
+    @State private var errorToken = UUID()
 
     private struct OutputFile: Identifiable, Equatable {
         let url: URL
@@ -120,22 +122,24 @@ struct AudioConvertView: View {
         .enableInteractivePop()
         .glassNavigationBar(title: "音频转换")
         .onAppear { loadFiles() }
-        .overlay(alignment: .center) {
-            if isBusy {
-                VStack(spacing: 12) {
-                    if busy {
-                        ProgressView(value: progress)
-                            .frame(width: 220)
-                    } else {
-                        ProgressView()
-                    }
-                    Text(busyText.isEmpty ? "处理中…" : busyText)
-                        .font(.system(size: 13))
-                        .foregroundStyle(Palette.secondary)
+        .onChange(of: notice) { _, value in
+            guard value != nil else { return }
+            noticeToken = UUID()
+            let token = noticeToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if noticeToken == token {
+                    withAnimation(.easeInOut(duration: 0.25)) { notice = nil }
                 }
-                .padding(.horizontal, 24)
-                .padding(.vertical, 20)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+        }
+        .onChange(of: errorText) { _, value in
+            guard value != nil else { return }
+            errorToken = UUID()
+            let token = errorToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
+                if errorToken == token {
+                    withAnimation(.easeInOut(duration: 0.25)) { errorText = nil }
+                }
             }
         }
         .sheet(isPresented: $showFilePicker) {
@@ -258,21 +262,57 @@ struct AudioConvertView: View {
         Button {
             convert()
         } label: {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform.badge.plus")
-                    .font(.system(size: 16, weight: .semibold))
-                Text("开始转换")
-                    .font(.system(size: 16, weight: .semibold))
+            VStack(spacing: isBusy ? 12 : 0) {
+                HStack(spacing: 8) {
+                    if isBusy {
+                        ProgressView()
+                            .controlSize(.small)
+                            .tint(Palette.ink)
+                    } else {
+                        Image(systemName: "waveform.badge.plus")
+                            .font(.system(size: 16, weight: .semibold))
+                    }
+                    Text(convertTitle)
+                        .font(.system(size: 16, weight: .semibold))
+                        .contentTransition(.numericText())
+                }
+                .foregroundStyle(Palette.ink)
+                .frame(maxWidth: .infinity)
+
+                if isBusy {
+                    Group {
+                        if progress > 0 {
+                            ProgressView(value: progress)
+                        } else {
+                            ProgressView()
+                                .progressViewStyle(.linear)
+                        }
+                    }
+                    .tint(Palette.ink)
+                    .frame(maxWidth: .infinity)
+                }
             }
-            .foregroundStyle(Palette.ink)
-            .frame(maxWidth: .infinity)
             .padding(.vertical, 16)
+            .padding(.horizontal, 20)
             .background(Palette.card, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .shadow(color: Color.black.opacity(0.035), radius: 12, x: 0, y: 4)
-            .opacity(canConvert ? 1 : 0.45)
+            .opacity(canConvert || isBusy ? 1 : 0.45)
+            .animation(.easeInOut(duration: 0.2), value: isBusy)
         }
         .buttonStyle(.plain)
         .disabled(!canConvert)
+    }
+
+    /// 按钮文案跟随状态变化，不再弹出居中的加载浮层。
+    private var convertTitle: String {
+        if importing { return "正在导入视频…" }
+        if busy {
+            if progress > 0 {
+                return "正在编码 \(Int((progress * 100).rounded()))%"
+            }
+            return busyText.isEmpty ? "正在转换…" : busyText
+        }
+        return "开始转换"
     }
 
     private var canConvert: Bool {
