@@ -178,7 +178,7 @@ struct SettingsTab: View {
                     SectionLabel(text: "数据")
                     CardBox {
                         VStack(alignment: .leading, spacing: 14) {
-                            InfoRow(title: "收藏路径", value: "\(bookmarks.items.count) 条")
+                            InfoRow(title: "收藏路径", value: "\(bookmarks.items.count) 条", emphasis: true)
                             ThinSeparator()
                             Button {
                                 confirmClearBookmarks = true
@@ -218,6 +218,7 @@ struct SettingsTab: View {
             .onAppear {
                 if checks.isEmpty { refreshEnvironment() }
             }
+            .onDisappear { confirmClearBookmarks = false }
             .sheet(isPresented: $showLog) {
                 DiagnosticsView(text: XCTContainerBridge.diagnostics())
             }
@@ -227,13 +228,69 @@ struct SettingsTab: View {
             } message: {
                 Text(alertMessage ?? "")
             }
-            .confirmationDialog("清空全部收藏路径？", isPresented: $confirmClearBookmarks, titleVisibility: .visible) {
-                Button("清空收藏", role: .destructive) {
-                    for item in bookmarks.items { bookmarks.remove(id: item.id) }
+            .overlay { clearBookmarkConfirm }
+            .animation(.easeInOut(duration: 0.2), value: confirmClearBookmarks)
+        }
+    }
+
+    /// 底部贴近标签栏的二次确认卡片，替代系统弹窗。
+    @ViewBuilder
+    private var clearBookmarkConfirm: some View {
+        if confirmClearBookmarks {
+            ZStack(alignment: .bottom) {
+                Color.black.opacity(0.16)
+                    .ignoresSafeArea()
+                    .onTapGesture { closeClearConfirm() }
+
+                VStack(spacing: 14) {
+                    VStack(spacing: 6) {
+                        Text("清空全部收藏路径？")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(Palette.ink)
+                        Text("共 \(bookmarks.items.count) 条，清空后不可恢复。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Palette.secondary)
+                    }
+
+                    Button {
+                        for item in bookmarks.items { bookmarks.remove(id: item.id) }
+                        closeClearConfirm()
+                    } label: {
+                        Text("清空收藏")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundStyle(Palette.danger)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 13)
+                            .background(Palette.danger.opacity(0.10),
+                                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        closeClearConfirm()
+                    } label: {
+                        Text("取消")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(Palette.ink)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 13)
+                            .background(Palette.placeholder,
+                                        in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
                 }
-                Button("取消", role: .cancel) { }
+                .padding(18)
+                .background(Palette.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .shadow(color: Color.black.opacity(0.12), radius: 24, y: 8)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 104)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+    }
+
+    private func closeClearConfirm() {
+        withAnimation(.easeInOut(duration: 0.2)) { confirmClearBookmarks = false }
     }
 
     private var appVersion: String {
@@ -271,12 +328,13 @@ struct SettingsTab: View {
 private struct InfoRow: View {
     let title: String
     let value: String
+    var emphasis = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Text(title)
                 .font(.system(size: 14))
-                .foregroundStyle(Palette.secondary)
+                .foregroundStyle(emphasis ? Palette.ink : Palette.secondary)
             Spacer(minLength: 8)
             Text(value)
                 .font(.system(size: 14, weight: .medium))
