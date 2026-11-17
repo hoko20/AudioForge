@@ -89,7 +89,7 @@ static BOOL AudioInitEncoder(AudioConverterContext *ctx, NSString **message) {
             ctx->silkControl.packetSize = 480;   // 20ms @24kHz
             ctx->silkControl.bitRate = 25000;
             ctx->silkControl.packetLossPercentage = 0;
-            ctx->silkControl.complexity = 8;     // 高复杂度 = 更好音质
+            ctx->silkControl.complexity = 2;     // 与参考项目一致（更高值需额外状态，部分 SDK 会直接报错）
             ctx->silkControl.useInBandFEC = 0;
             ctx->silkControl.useDTX = 0;
             return YES;

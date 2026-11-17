@@ -18,6 +18,7 @@ struct AudioConvertView: View {
     @State private var inputPath = ""
     @State private var outputPath = ""
     @State private var outputEdited = false
+    @State private var suppressOutputEdit = false
     @State private var format: AudioOutputFormat = .silk
     @State private var busy = false
     @State private var busyText = ""
@@ -194,7 +195,13 @@ struct AudioConvertView: View {
                 .padding(12)
                 .background(Palette.placeholder, in: RoundedRectangle(cornerRadius: 12))
                 .disabled(busy)
-                .onChange(of: outputPath) { _, _ in outputEdited = true }
+                .onChange(of: outputPath) { _, _ in
+                    if suppressOutputEdit {
+                        suppressOutputEdit = false
+                    } else {
+                        outputEdited = true
+                    }
+                }
 
             Text(outputEdited ? "输出路径已手动修改" : "自动输出：粘贴的源文件写回同目录；从文件 / 相册选择的写入本 App 文档目录")
                 .font(.system(size: 11))
@@ -307,6 +314,7 @@ struct AudioConvertView: View {
             output = ((base as NSString).appendingPathExtension(ext) ?? base + "." + ext)
         }
         outputEdited = false
+        suppressOutputEdit = true
         outputPath = output
     }
 
@@ -347,6 +355,8 @@ struct AudioConvertView: View {
         let destPath = output
         let sourceName = (sourcePath as NSString).lastPathComponent
         let inOwnSandbox = destPath.hasPrefix(NSHomeDirectory())
+        let isLocal = sourcePath.hasPrefix(NSHomeDirectory())
+            || sourcePath.hasPrefix("/private" + NSHomeDirectory())
 
         func finish(error: String) {
             DispatchQueue.main.async {
@@ -357,13 +367,6 @@ struct AudioConvertView: View {
         }
 
         DispatchQueue.global(qos: .userInitiated).async {
-            // 沙盒外的文件 AVFoundation 读不到，先经桥接把字节复制到本沙盒。
-            let raw = XCTFileOps.readData(at: sourcePath, maxBytes: 500_000_000)
-            guard let data = raw["data"] as? Data else {
-                finish(error: raw["error"] as? String ?? "读取源文件失败")
-                return
-            }
-
             let dir = FileManager.default.temporaryDirectory
                 .appendingPathComponent("aud-convert-\(UUID().uuidString)", isDirectory: true)
             do {
@@ -374,19 +377,34 @@ struct AudioConvertView: View {
             }
             defer { try? FileManager.default.removeItem(at: dir) }
 
-            let tempInput = dir.appendingPathComponent(sourceName.isEmpty ? "source" : sourceName)
-            let tempOutput = dir.appendingPathComponent("out.bin")
-            do {
-                try data.write(to: tempInput)
-            } catch {
-                finish(error: "临时文件写入失败：\(error.localizedDescription)")
-                return
+            // 本 App 沙盒内的文件（文件 / 相册选择的都在 tmp 里）直接交给 AVFoundation，
+            // 不再整份读进内存再写一遍——那样又慢又容易在大视频上失败。
+            let inputURL: URL
+            if isLocal {
+                inputURL = URL(fileURLWithPath: sourcePath)
+            } else {
+                DispatchQueue.main.async { busyText = "读取源文件…" }
+                let raw = XCTFileOps.readData(at: sourcePath, maxBytes: 500_000_000)
+                guard let data = raw["data"] as? Data else {
+                    finish(error: raw["error"] as? String ?? "读取源文件失败")
+                    return
+                }
+                let tempInput = dir.appendingPathComponent(sourceName.isEmpty ? "source" : sourceName)
+                do {
+                    try data.write(to: tempInput)
+                } catch {
+                    finish(error: "临时文件写入失败：\(error.localizedDescription)")
+                    return
+                }
+                inputURL = tempInput
             }
+
+            let tempOutput = dir.appendingPathComponent("out.bin")
 
             DispatchQueue.main.async { busyText = "正在编码…" }
 
             do {
-                try AudioConverter.convertMedia(at: tempInput, to: tempOutput,
+                try AudioConverter.convertMedia(at: inputURL, to: tempOutput,
                                                 format: format, progress: { value in
                     DispatchQueue.main.async { progress = value }
                 })
@@ -424,8 +442,8 @@ struct AudioConvertView: View {
                 return
             }
 
-            let attrs = XCTFileOps.attributes(at: destPath)
-            let size = attrs["大小"] ?? "-"
+            let bytes = XCTFileOps.size(at: destPath)?.int64Value ?? 0
+            let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
             DispatchQueue.main.async {
                 busy = false
                 progress = 1
