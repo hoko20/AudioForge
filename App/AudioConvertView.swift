@@ -28,6 +28,7 @@ struct AudioConvertView: View {
     @State private var showFilePicker = false
     @State private var showPhotoPicker = false
     @State private var renameTarget: OutputFile?
+    @State private var playTarget: OutputFile?
     @State private var renameText = ""
     @State private var showRename = false
     @State private var noticeToken = UUID()
@@ -91,7 +92,7 @@ struct AudioConvertView: View {
                 HStack(alignment: .firstTextBaseline) {
                     SectionLabel(text: "输出文件")
                     Spacer()
-                    Text(files.isEmpty ? "AudioForge 目录" : "共 \(files.count) 个 · 右滑可重命名 / 删除")
+                    Text(files.isEmpty ? "AudioForge 目录" : "共 \(files.count) 个 · 点按播放 · 右滑管理")
                         .font(.system(size: 11))
                         .foregroundStyle(Palette.tertiary)
                 }
@@ -163,6 +164,9 @@ struct AudioConvertView: View {
                 }
                 setInput(url.path)
             })
+        }
+        .sheet(item: $playTarget) { file in
+            AudioPlayerSheet(url: file.url)
         }
         .alert("重命名", isPresented: $showRename) {
             TextField("文件名", text: $renameText)
@@ -357,11 +361,16 @@ struct AudioConvertView: View {
             }
 
             Spacer(minLength: 0)
+
+            Image(systemName: "play.circle")
+                .font(.system(size: 19, weight: .regular))
+                .foregroundStyle(Palette.warning)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .background(Palette.card, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .onTapGesture { playTarget = file }
         .swipeActions(edge: .leading, allowsFullSwipe: false) {
             Button(role: .destructive) {
                 delete(file)
@@ -376,6 +385,11 @@ struct AudioConvertView: View {
             .tint(Palette.warning)
         }
         .contextMenu {
+            Button {
+                playTarget = file
+            } label: {
+                Label("播放", systemImage: "play.circle")
+            }
             Button {
                 UIPasteboard.general.string = file.url.path
                 notice = "已复制路径"

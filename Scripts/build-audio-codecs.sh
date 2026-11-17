@@ -60,8 +60,12 @@ cd "$NB_SRC"
   CXXFLAGS="$ARCH_FLAGS -O2 -fPIC" \
   LDFLAGS="$ARCH_FLAGS"
 make -j"$(sysctl -n hw.ncpu)" -C amrnb
+make -j"$(sysctl -n hw.ncpu)" -C amrwb
 cp amrnb/.libs/libopencore-amrnb.a "$VENDOR/lib/libopencore-amrnb.a"
+cp amrwb/.libs/libopencore-amrwb.a "$VENDOR/lib/libopencore-amrwb.a"
 cp amrnb/interf_enc.h "$VENDOR/include/interf_enc.h"
+cp amrnb/interf_dec.h "$VENDOR/include/interf_dec.h"
+cp amrwb/dec_if.h "$VENDOR/include/dec_if.h"
 
 # ---------------------------------------------------------------- AMR-WB
 WB_VER="0.1.3"
@@ -108,11 +112,14 @@ cp "$SILK_SRC"/interface/*.h "$VENDOR/include/silk/"
 # ---------------------------------------------------------------- 校验
 echo "== 产物校验 =="
 ls -lh "$VENDOR/lib"
-for lib in libopencore-amrnb libvo-amrwbenc libSKP_SILK_SDK; do
+for lib in libopencore-amrnb libopencore-amrwb libvo-amrwbenc libSKP_SILK_SDK; do
   lipo -info "$VENDOR/lib/$lib.a"
 done
 
 nm -gU "$VENDOR/lib/libopencore-amrnb.a" | grep -c "Encoder_Interface_Encode"
+nm -gU "$VENDOR/lib/libopencore-amrnb.a" | grep -c "Decoder_Interface_init"
+nm -gU "$VENDOR/lib/libopencore-amrwb.a" | grep -c "D_IF_decode"
 nm -gU "$VENDOR/lib/libvo-amrwbenc.a" | grep -c "E_IF_encode"
 nm -gU "$VENDOR/lib/libSKP_SILK_SDK.a" | grep -c "SKP_Silk_SDK_Encode"
+nm -gU "$VENDOR/lib/libSKP_SILK_SDK.a" | grep -c "SKP_Silk_SDK_Decode"
 ls "$VENDOR/include" "$VENDOR/include/silk"

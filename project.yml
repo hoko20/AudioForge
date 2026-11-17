@@ -16,7 +16,7 @@ settings:
     IPHONEOS_DEPLOYMENT_TARGET: '26.0'
     HEADER_SEARCH_PATHS: '$(SRCROOT)/Vendor/WQFiles $(SRCROOT)/ContainerAccess $(SRCROOT)/AudioConverter $(SRCROOT)/Vendor/include $(SRCROOT)/Vendor/include/silk'
     LIBRARY_SEARCH_PATHS: '$(SRCROOT)/Vendor/lib'
-    OTHER_LDFLAGS: '-lopencore-amrnb -lvo-amrwbenc -lSKP_SILK_SDK'
+    OTHER_LDFLAGS: '-lopencore-amrnb -lopencore-amrwb -lvo-amrwbenc -lSKP_SILK_SDK'
     SWIFT_OBJC_BRIDGING_HEADER: ContainerAccess/BridgingHeader.h
     GENERATE_INFOPLIST_FILE: NO
     INFOPLIST_FILE: Resources/Info.plist
