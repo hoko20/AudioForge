@@ -13,7 +13,6 @@ struct CacheCleanView: View {
     @State private var notice: String?
     @State private var errorText: String?
     @State private var confirmCleanAll = false
-    @State private var expanded: Set<String> = []
     @State private var noticeToken = UUID()
 
     struct AppCacheRow: Identifiable {
@@ -154,70 +153,53 @@ struct CacheCleanView: View {
     // MARK: - 应用行
 
     private func appRow(_ row: AppCacheRow) -> some View {
-        let isExpanded = expanded.contains(row.id)
-        return CardBox(radius: 18, padding: 0) {
-            VStack(spacing: 0) {
-                HStack(spacing: 12) {
-                    AppIconView(bundleID: row.id, size: 38)
+        CardBox(radius: 18, padding: 0) {
+            HStack(spacing: 12) {
+                NavigationLink {
+                    DirectoryView(route: PathRoute(path: row.path, root: row.path, title: row.name))
+                } label: {
+                    HStack(spacing: 12) {
+                        AppIconView(bundleID: row.id, size: 38)
 
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(row.name)
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(Palette.ink)
-                            .lineLimit(1)
-                        Text(targetSummary(row))
-                            .font(.system(size: 11))
-                            .foregroundStyle(Palette.secondary)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 6)
-
-                    Text(sizeText(row.bytes))
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Palette.ink)
-
-                    Button {
-                        clean(row)
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Palette.danger)
-                            .frame(width: 30, height: 30)
-                            .background(Palette.placeholder, in: Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(cleaning || scanning)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        if isExpanded { expanded.remove(row.id) } else { expanded.insert(row.id) }
-                    }
-                }
-
-                if isExpanded {
-                    ThinSeparator().padding(.leading, 14)
-                    VStack(spacing: 8) {
-                        ForEach(row.targets) { target in
-                            HStack {
-                                Text(target.kind)
-                                    .font(.system(size: 12))
-                                    .foregroundStyle(Palette.secondary)
-                                Spacer()
-                                Text(sizeText(target.bytes))
-                                    .font(.system(size: 12, design: .monospaced))
-                                    .foregroundStyle(Palette.tertiary)
-                            }
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(row.name)
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(Palette.ink)
+                                .lineLimit(1)
+                            Text(targetSummary(row))
+                                .font(.system(size: 11))
+                                .foregroundStyle(Palette.secondary)
+                                .lineLimit(1)
                         }
+
+                        Spacer(minLength: 6)
+
+                        Text(sizeText(row.bytes))
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Palette.ink)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Palette.tertiary)
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+
+                Button {
+                    clean(row)
+                } label: {
+                    Image(systemName: "trash")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(Palette.danger)
+                        .frame(width: 30, height: 30)
+                        .background(Palette.placeholder, in: Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(cleaning || scanning)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
         }
     }
 
@@ -244,7 +226,6 @@ struct CacheCleanView: View {
 
         errorText = nil
         scanning = true
-        expanded = []
         rows = []
         scanText = "正在扫描 0/\(apps.count)"
 
