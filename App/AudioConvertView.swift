@@ -3,6 +3,14 @@ import UIKit
 import UniformTypeIdentifiers
 import PhotosUI
 
+/// 固定 Swift 侧名称，避免依赖 ObjC 枚举 case 的自动导入名。
+/// 对应 AudioConverter.h：0 = AMR-NB，1 = AMR-WB（silk 是 AudioOutputFormatSilk
+/// 的原生导入名，无需重复定义）。
+private extension AudioOutputFormat {
+    static let nb = AudioOutputFormat(rawValue: 0)!
+    static let wb = AudioOutputFormat(rawValue: 1)!
+}
+
 /// 「音频转换」工具：把 mp3 / mp4 等带音轨的媒体转成 AMR-NB / AMR-WB（.amr）
 /// 或 SILK v3（.aud，微信 / QQ 语音格式），与「替换文件」工具配套。
 /// 源文件支持三种来源：粘贴路径、文件选择器、相册选视频。
@@ -71,7 +79,7 @@ struct AudioConvertView: View {
         }
         .fileImporter(isPresented: $showFilePicker,
                       allowedContentTypes: [.audio, .movie],
-                      allowMultipleSelection: false) { result in
+                      allowsMultipleSelection: false) { result in
             handleFilePick(result)
         }
         .sheet(isPresented: $showPhotoPicker) {

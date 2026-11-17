@@ -5,9 +5,9 @@ NS_ASSUME_NONNULL_BEGIN
 typedef void (^AudioProgressBlock)(double progress);
 
 typedef NS_ENUM(NSInteger, AudioOutputFormat) {
-    AudioOutputFormatNB = 0,   ///< AMR-NB 12.2 kbps / 8 kHz，.amr，兼容性最好（Swift: .nb）
-    AudioOutputFormatWB = 1,   ///< AMR-WB 23.85 kbps / 16 kHz，.amr，明显更清晰（Swift: .wb）
-    AudioOutputFormatSilk = 2, ///< SILK v3 25 kbps / 24 kHz，.aud，微信 / QQ 语音（Swift: .silk）
+    AudioOutputFormatNB = 0,   ///< AMR-NB 12.2 kbps / 8 kHz，.amr，兼容性最好
+    AudioOutputFormatWB = 1,   ///< AMR-WB 23.85 kbps / 16 kHz，.amr，明显更清晰
+    AudioOutputFormatSilk = 2, ///< SILK v3 25 kbps / 24 kHz，.aud，微信 / QQ 语音
 };
 
 typedef NS_ENUM(NSInteger, AudioConverterError) {
