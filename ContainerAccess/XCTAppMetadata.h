@@ -26,4 +26,12 @@ void XCTSetCatalogIconsEnabled(BOOL enabled);
 // Last resolution outcome: @{ @"source": ..., @"detail": ... }.
 NSDictionary<NSString *, NSString *> * _Nullable XCTIconFact(NSString *bundleID);
 
+// Display metadata for an app container: @{ @"name": ..., @"category": ... }.
+// Name chain: LaunchServices name (WQ Files tables/LS database) -> LS proxy
+// localizedName -> localized CFBundleDisplayName/CFBundleName -> App Store
+// iTunesMetadata itemName -> bundle id. Category comes from the App Store
+// genre, then LSApplicationCategoryType, then system/third-party.
+// Cached per bundle id for the process.
+NSDictionary<NSString *, NSString *> *XCTAppIdentity(NSString * _Nullable bundleID);
+
 NS_ASSUME_NONNULL_END

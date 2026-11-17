@@ -7,6 +7,7 @@ struct AppRecord: Identifiable, Hashable {
     let id: String
     let name: String
     let path: String
+    var category: String = ""
 }
 
 struct DirEntry: Identifiable, Hashable {
@@ -303,7 +304,10 @@ final class FileListModel: ObservableObject {
             let log = XCTContainerBridge.diagnostics()
             var records: [AppRecord] = rows.map { row in
                 let id = row["id"] ?? ""
-                return AppRecord(id: id, name: row["name"] ?? id, path: row["path"] ?? "")
+                return AppRecord(id: id,
+                                 name: row["name"] ?? id,
+                                 path: row["path"] ?? "",
+                                 category: row["category"] ?? "")
             }
             records.sort {
                 let a = Self.rank($0.id), b = Self.rank($1.id)

@@ -22,7 +22,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)stopFullScan NS_SWIFT_NAME(stopFullScan());
 
 // Enumerate application data containers that can be granted and identified.
-// Each record: id, name, path.
+// Each record: id, name, path, category.
 + (NSArray<NSDictionary<NSString *, NSString *> *> *)applications:(BOOL)refresh NS_SWIFT_NAME(applications(refresh:));
 
 // Container paths found by the last enumeration, and whether the last scan

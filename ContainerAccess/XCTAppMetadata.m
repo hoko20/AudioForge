@@ -830,3 +830,147 @@ void XCTWarmAppIcons(NSArray<NSString *> *bundleIDs)
         }
     }
 }
+
+// MARK: - Display name & category
+
+// Localized value from <bundle>/<lang>.lproj/InfoPlist.strings, falling back
+// to the raw Info.plist key.
+static NSString *XCTLocalizedName(NSString *bundle, NSDictionary *info, NSString *key)
+{
+    if (bundle.length) {
+        wq_grant(bundle);
+        NSBundle *appBundle = [NSBundle bundleWithPath:bundle];
+        NSString *localized = [appBundle localizedStringForKey:key value:@"" table:@"InfoPlist"];
+        if (localized.length) return localized;
+    }
+    id raw = info[key];
+    return [raw isKindOfClass:NSString.class] && [raw length] ? raw : nil;
+}
+
+static NSDictionary *XCTReadAppStoreMetadata(NSString *bundle)
+{
+    if (!bundle.length) return nil;
+    NSString *path = [bundle stringByAppendingPathComponent:@"iTunesMetadata.plist"];
+    NSData *data = XCTReadFile(path, 4 * 1024 * 1024);
+    if (!data) return nil;
+    id plist = [NSPropertyListSerialization propertyListWithData:data options:0 format:NULL error:NULL];
+    return [plist isKindOfClass:NSDictionary.class] ? plist : nil;
+}
+
+// LSApplicationProxy carries the same localized name the home screen shows.
+static NSString *XCTProxyName(NSString *bid)
+{
+    Class workspaceClass = NSClassFromString(@"LSApplicationWorkspace");
+    id workspace = XCTInvokeObject(workspaceClass, @"defaultWorkspace", @[]);
+    if (!workspace) workspace = XCTInvokeObject(workspaceClass, @"sharedWorkspace", @[]);
+    if (!workspace) return nil;
+    for (NSString *sel in @[@"applicationProxyForIdentifier:", @"applicationForBundleIdentifier:",
+                            @"applicationWithBundleIdentifier:", @"applicationForIdentifier:"]) {
+        id proxy = XCTInvokeObject(workspace, sel, @[bid]);
+        if (!proxy) continue;
+        for (NSString *key in @[@"localizedName", @"itemName", @"displayName"]) {
+            id value = XCTInvokeObject(proxy, key, @[]);
+            if ([value isKindOfClass:NSString.class] && [(NSString *)value length]) return value;
+        }
+    }
+    return nil;
+}
+
+static NSString *XCTCategoryFromType(NSString *type)
+{
+    if (![type isKindOfClass:NSString.class] || !type.length) return nil;
+    static NSDictionary<NSString *, NSString *> *table;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        table = @{
+            @"public.app-category.games": @"游戏",
+            @"public.app-category.social-networking": @"社交",
+            @"public.app-category.shopping": @"购物",
+            @"public.app-category.utilities": @"工具",
+            @"public.app-category.productivity": @"效率",
+            @"public.app-category.entertainment": @"娱乐",
+            @"public.app-category.music": @"音乐",
+            @"public.app-category.photo-video": @"摄影与录像",
+            @"public.app-category.photography": @"摄影与录像",
+            @"public.app-category.news": @"新闻",
+            @"public.app-category.finance": @"财务",
+            @"public.app-category.education": @"教育",
+            @"public.app-category.lifestyle": @"生活",
+            @"public.app-category.healthcare-fitness": @"健康健美",
+            @"public.app-category.travel": @"旅游",
+            @"public.app-category.food-and-drink": @"美食佳饮",
+            @"public.app-category.navigation": @"导航",
+            @"public.app-category.business": @"商务",
+            @"public.app-category.developer-tools": @"开发者工具",
+            @"public.app-category.graphics-design": @"图形与设计",
+            @"public.app-category.medical": @"医疗",
+            @"public.app-category.books": @"图书",
+            @"public.app-category.reference": @"参考",
+            @"public.app-category.sports": @"体育",
+            @"public.app-category.weather": @"天气",
+            @"public.app-category.magazines-newspapers": @"报刊杂志",
+        };
+    });
+    NSString *name = table[type];
+    if (name) return name;
+    // Unknown sub-category: keep the last dash segment readable.
+    NSString *tail = type.pathExtension;
+    return tail.length > 3 ? tail : nil;
+}
+
+// App Store genre first (already localized), then the bundle's declared
+// category, then a system / third-party split so every row has a label.
+static NSString *XCTAppCategory(NSString *bid, NSDictionary *info, NSDictionary *meta)
+{
+    id genre = meta[@"genre"];
+    if ([genre isKindOfClass:NSString.class] && [(NSString *)genre length]) return genre;
+
+    for (NSString *key in @[@"LSApplicationCategoryType", @"ApplicationCategoryType"]) {
+        NSString *name = XCTCategoryFromType(info[key]);
+        if (name) return name;
+    }
+    if ([bid hasPrefix:@"com.apple."]) return @"系统";
+    return @"第三方";
+}
+
+NSDictionary<NSString *, NSString *> *XCTAppIdentity(NSString *bundleID)
+{
+    if (!bundleID.length) return @{ @"name": @"", @"category": @"" };
+
+    static NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *cache;
+    static NSLock *lock;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        cache = [NSMutableDictionary dictionary];
+        lock = [NSLock new];
+    });
+
+    [lock lock];
+    NSDictionary<NSString *, NSString *> *cached = cache[bundleID];
+    [lock unlock];
+    if (cached) return cached;
+
+    NSString *bundle = wq_bundle_path_for_id(bundleID);
+    if (bundle.length) wq_grant(bundle);
+    NSDictionary *info = bundle.length ? XCTReadInfo(bundle) : nil;
+    NSDictionary *meta = XCTReadAppStoreMetadata(bundle);
+
+    NSString *name = wq_display_name(bundleID);
+    if (!name.length || [name isEqualToString:bundleID]) {
+        id itemName = meta[@"itemName"];
+        name = XCTProxyName(bundleID)
+            ?: XCTLocalizedName(bundle, info, @"CFBundleDisplayName")
+            ?: XCTLocalizedName(bundle, info, @"CFBundleName")
+            ?: ([itemName isKindOfClass:NSString.class] && [itemName length] ? itemName : nil)
+            ?: bundleID;
+    }
+
+    NSDictionary<NSString *, NSString *> *result = @{
+        @"name": name ?: bundleID,
+        @"category": XCTAppCategory(bundleID, info, meta) ?: @"",
+    };
+    [lock lock];
+    cache[bundleID] = result;
+    [lock unlock];
+    return result;
+}

@@ -204,8 +204,11 @@ static NSArray<NSString *> *XCTSamplePaths(NSArray<NSString *> *paths, NSUIntege
         NSString *identifier = wq_container_label(path);
         if (!identifier.length) continue;
         if (!wq_grant(path)) continue;
-        NSString *name = wq_display_name(identifier) ?: identifier;
-        [result addObject:@{ @"id": identifier, @"name": name, @"path": path }];
+        NSDictionary<NSString *, NSString *> *identity = XCTAppIdentity(identifier);
+        NSString *name = identity[@"name"];
+        if (!name.length) name = identifier;
+        [result addObject:@{ @"id": identifier, @"name": name, @"path": path,
+                             @"category": identity[@"category"] ?: @"" }];
     }
     if (!result.count) XCTSetError([NSString stringWithFormat:@"找到 %lu 个容器路径，但没有一个能取得 token 或身份标识。请查看日志中的 grant / enumerate 行。",
                                     (unsigned long)paths.count]);

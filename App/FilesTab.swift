@@ -10,7 +10,8 @@ struct FilesTab: View {
         guard !query.isEmpty else { return files.apps }
         let q = query.lowercased()
         return files.apps.filter {
-            $0.name.lowercased().contains(q) || $0.id.lowercased().contains(q) || $0.path.lowercased().contains(q)
+            $0.name.lowercased().contains(q) || $0.id.lowercased().contains(q)
+                || $0.path.lowercased().contains(q) || $0.category.contains(query)
         }
     }
 
@@ -171,10 +172,22 @@ struct AppCard: View {
         HStack(spacing: 14) {
             AppIconView(bundleID: app.id, size: 50)
             VStack(alignment: .leading, spacing: 5) {
-                Text(app.name)
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(Palette.ink)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(app.name)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(Palette.ink)
+                        .lineLimit(1)
+
+                    if !app.category.isEmpty {
+                        Text(app.category)
+                            .font(.system(size: 10, weight: .medium))
+                            .foregroundStyle(Palette.warning)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Palette.warning.opacity(0.10), in: Capsule())
+                            .fixedSize()
+                    }
+                }
                 Text(app.id)
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.secondary)
