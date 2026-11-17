@@ -153,10 +153,15 @@ struct CacheCleanView: View {
     // MARK: - 应用行
 
     private func appRow(_ row: AppCacheRow) -> some View {
-        CardBox(radius: 18, padding: 0) {
+        // 点按进入真正被清理的缓存目录（取占用最大的那一项，通常是 Library/Caches）
+        let primary = row.targets.max { $0.bytes < $1.bytes }
+        let targetPath = primary?.path ?? row.path
+        let targetTitle = primary.map { "\(row.name) · \($0.kind)" } ?? row.name
+
+        return CardBox(radius: 18, padding: 0) {
             HStack(spacing: 12) {
                 NavigationLink {
-                    DirectoryView(route: PathRoute(path: row.path, root: row.path, title: row.name))
+                    DirectoryView(route: PathRoute(path: targetPath, root: targetPath, title: targetTitle))
                 } label: {
                     HStack(spacing: 12) {
                         AppIconView(bundleID: row.id, size: 38)
@@ -170,6 +175,11 @@ struct CacheCleanView: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(Palette.secondary)
                                 .lineLimit(1)
+                            Text(targetPath)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundStyle(Palette.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
 
                         Spacer(minLength: 6)
