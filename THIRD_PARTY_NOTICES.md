@@ -15,7 +15,7 @@
 - `WQLocalization.h` / `WQLocalization.m` — 上游本地化包装。
 - `LICENSE` — 上游许可证原文。
 
-`ContainerAccess/XCTAppMetadata.h/.m` 以上游 `WQUI.m` 的 `wq_app_icon` 为基线（私有 UIKit 图标接口 + 占位指纹过滤、安装包 `Info.plist` / PNG 读取、父 bundle id 回退、中性占位 tile），并额外接入 LaunchServices / IconServices 图标缓存与 **CoreUI (`CUICatalog`) 对 `.app/Assets.car` 的按名解析** —— 上游注释已说明 iOS 26 会拒绝第三方进程的 UIKit 图标请求，这是在该系统上取到真实图标所必需的补充；所有私有 API 均运行时动态解析，不链接私有 framework。该文件只用于按需读取应用图标，不参与容器枚举主链路；原始版权与许可证声明保留在文件头。`ContainerAccess/XCTContainerBridge.h/.m` 是本工程的集成层：注册全局回调、应用发现、目录列表、排序所需的 `mtime`/扩展名、自检、图标探测与缓存修复。
+`Core/Metadata/XCTAppMetadata.h/.m` 以上游 `WQUI.m` 的 `wq_app_icon` 为基线（私有 UIKit 图标接口 + 占位指纹过滤、安装包 `Info.plist` / PNG 读取、父 bundle id 回退、中性占位 tile），并额外接入 LaunchServices / IconServices 图标缓存与 **CoreUI (`CUICatalog`) 对 `.app/Assets.car` 的按名解析** —— 上游注释已说明 iOS 26 会拒绝第三方进程的 UIKit 图标请求，这是在该系统上取到真实图标所必需的补充；所有私有 API 均运行时动态解析，不链接私有 framework。该文件只用于按需读取应用图标，不参与容器枚举主链路；原始版权与许可证声明保留在文件头。`Core/Sandbox/XCTContainerBridge.h/.m` 是本工程的集成层：注册全局回调、应用发现、目录列表、排序所需的 `mtime`/扩展名、自检、图标探测与缓存修复。
 
 上游其它文件（`WQApps.m`、`WQCache.m`、`WQHealth.m`、`WQUI.m`、编辑器、SQLite、ZIP、UI 等）**未包含**。
 

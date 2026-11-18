@@ -14,10 +14,10 @@ settings:
     CURRENT_PROJECT_VERSION: 9
     TARGETED_DEVICE_FAMILY: '1,2'
     IPHONEOS_DEPLOYMENT_TARGET: '26.0'
-    HEADER_SEARCH_PATHS: '$(SRCROOT)/Vendor/WQFiles $(SRCROOT)/ContainerAccess $(SRCROOT)/AudioConverter $(SRCROOT)/Vendor/include $(SRCROOT)/Vendor/include/silk'
+    HEADER_SEARCH_PATHS: '$(SRCROOT)/Vendor/WQFiles $(SRCROOT)/Core/Sandbox $(SRCROOT)/Core/Metadata $(SRCROOT)/Core/Cache $(SRCROOT)/Core/Audio $(SRCROOT)/Vendor/include $(SRCROOT)/Vendor/include/silk'
     LIBRARY_SEARCH_PATHS: '$(SRCROOT)/Vendor/lib'
     OTHER_LDFLAGS: '-lopencore-amrnb -lopencore-amrwb -lvo-amrwbenc -lSKP_SILK_SDK'
-    SWIFT_OBJC_BRIDGING_HEADER: ContainerAccess/BridgingHeader.h
+    SWIFT_OBJC_BRIDGING_HEADER: Core/BridgingHeader.h
     GENERATE_INFOPLIST_FILE: NO
     INFOPLIST_FILE: Resources/Info.plist
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -28,8 +28,7 @@ targets:
     platform: iOS
     sources:
       - App
-      - AudioConverter
-      - ContainerAccess
+      - Core
       - Vendor/WQFiles
       - path: Resources/Assets.xcassets
         buildPhase: resources
