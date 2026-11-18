@@ -5,47 +5,41 @@
 ## 目录结构
 
 ```
-App/                    SwiftUI 界面层（纯 UI 与状态，不含系统私有调用）
-├── Entry/              应用入口
+App/                   全部源码，一个目录 = 一个功能，功能相关文件（界面 + 逻辑）都放同一目录
+├── BridgingHeader.h   暴露给 Swift 的 ObjC 头文件总入口
+├── Entry/             应用入口
 │   ├── SandboxApp.swift        @main，窗口、全局容器状态
 │   └── ContentView.swift       悬浮胶囊 Tab 栏
-├── Tabs/               三个一级页面
+├── Tabs/              三个一级页面
 │   ├── FilesTab.swift          文件：应用容器列表
 │   ├── ToolsTab.swift          工具：收藏夹 + 工具入口
 │   └── SettingsTab.swift       设置：运行环境 / 数据 / 关于
-├── Features/           按功能划分的二级页面
-│   ├── Browser/                目录浏览
-│   │   ├── FileView.swift              根目录浏览
-│   │   ├── DirectoryView.swift         任意目录浏览（排序 / 收藏 / 手势）
-│   │   └── DirectoryPickerSheet.swift  目录选择器
-│   ├── AppAccess/              应用沙盒访问
-│   │   ├── AppAccessView.swift         容器授权与自检界面
-│   │   └── AppIconView.swift           真实图标加载与缓存
-│   ├── Replace/                替换文件工具
-│   │   ├── ReplaceFileView.swift       界面
-│   │   └── ReplaceFileModel.swift      状态与校验
-│   ├── Convert/                音频转换
-│   │   ├── AudioConvertView.swift      mp3/mp4 → aud / amr / m4a
-│   │   └── AudioPlayerSheet.swift      转换产物试听
-│   └── Cache/                  缓存清理
-│       └── CacheCleanView.swift        缓存统计与清理
-└── Core/               界面共用基础
+├── Browser/           目录浏览
+│   ├── FileView.swift                  根目录浏览
+│   ├── DirectoryView.swift             任意目录浏览（排序 / 收藏 / 手势）
+│   └── DirectoryPickerSheet.swift      目录选择器
+├── AppAccess/         应用沙盒访问与图标
+│   ├── AppAccessView.swift             容器授权与自检界面
+│   ├── AppIconView.swift               真实图标加载与缓存
+│   └── XCTAppMetadata.h/.m             应用名、图标、分类元数据
+├── Sandbox/           沙盒底层桥接
+│   ├── XCTContainerBridge.h/.m         容器发现、token 授权、日志
+│   └── XCTFileOps.h/.m                 跨沙盒读写、目录列举
+├── Replace/           替换文件工具
+│   ├── ReplaceFileView.swift           界面
+│   └── ReplaceFileModel.swift          状态与校验
+├── Convert/           音频转换与试听
+│   ├── AudioConvertView.swift          mp3/mp4 → aud / amr / m4a
+│   ├── AudioPlayerSheet.swift          转换产物试听
+│   ├── AudioConverter.h/.m             解码 → AMR / SILK / AAC 编码
+│   └── AudioPlayback.h/.m              SILK / AMR 解码后交给系统播放
+├── Cache/             缓存清理
+│   ├── CacheCleanView.swift            缓存统计与清理界面
+│   └── XCTCacheOps.h/.m                缓存目录统计与清理
+└── Shared/            全局共用
     ├── Theme.swift                     配色、卡片、按钮样式
     ├── Models.swift                    数据模型与持久化
     └── NavigationEnhancements.swift    右滑返回与导航修复
-
-Core/                   ObjC 桥接层（系统私有接口都在这里）
-├── BridgingHeader.h    暴露给 Swift 的头文件总入口
-├── Sandbox/            沙盒访问
-│   ├── XCTContainerBridge.h/.m   容器发现、token 授权、日志
-│   └── XCTFileOps.h/.m           跨沙盒读写、目录列举
-├── Metadata/           应用元数据
-│   └── XCTAppMetadata.h/.m       真实名称、图标、分类
-├── Cache/              缓存
-│   └── XCTCacheOps.h/.m          缓存目录统计与清理
-└── Audio/              音频编解码
-    ├── AudioConverter.h/.m       解码 → AMR / SILK / AAC 编码
-    └── AudioPlayback.h/.m        SILK / AMR 解码后交给系统播放
 
 Vendor/                 第三方源码（不要改）
 └── WQFiles/            上游 kolbicz/WQFiles 0.9.5 源码，编译进 App 必需
@@ -74,7 +68,7 @@ Resources/              Info.plist、AppGroup.entitlements、图标资源
 
 上游 `WQUI.m` 的注释直接点明根因：**iOS 26 拒绝第三方进程的 UIKit 图标请求**，私有 `_applicationIconImageForBundleIdentifier:format:scale:` 只返回固定占位图；上游兜底只找 `.app` 里散落的 PNG，而现代应用的图标都编译进 `Assets.car`，所以两者都失败、列表全是灰色 tile。
 
-`Core/Metadata/XCTAppMetadata.m` 在上游链路之外补了四层，逐层回退：
+`App/AppAccess/XCTAppMetadata.m` 在上游链路之外补了四层，逐层回退：
 
 | 层 | 来源 | 说明 |
 |---|---|---|
@@ -92,7 +86,7 @@ Resources/              Info.plist、AppGroup.entitlements、图标资源
 
 ### 导航与手势
 
-- **左边缘右滑返回**：隐藏系统返回按钮会让 SwiftUI 禁用 `interactivePopGestureRecognizer`。`App/Core/NavigationEnhancements.swift` 用一个零尺寸的 `UIViewControllerRepresentable` 重新挂上 delegate（仅在 `viewControllers.count > 1` 时允许开始，避免根页面半弹出卡死），并在每次导航更新后校验 delegate 未被 SwiftUI 重置。
+- **左边缘右滑返回**：隐藏系统返回按钮会让 SwiftUI 禁用 `interactivePopGestureRecognizer`。`App/Shared/NavigationEnhancements.swift` 用一个零尺寸的 `UIViewControllerRepresentable` 重新挂上 delegate（仅在 `viewControllers.count > 1` 时允许开始，避免根页面半弹出卡死），并在每次导航更新后校验 delegate 未被 SwiftUI 重置。
 - **毛玻璃导航栏**：三个 tab 与目录页统一用 `.ultraThinMaterial` 工具栏背景 + inline 标题，标题显示当前 tab 名称（文件 / 工具 / 设置）或当前目录名。内容从下方滚过时会透出模糊效果。
 
 ### 目录导航边界
