@@ -383,14 +383,48 @@ static NSDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *XCTInst
     return map;
 }
 
+// The LS database on iOS 26 keeps display names but can lose the bundle-path
+// table. Enumerate the bundle containers once instead, so the icon fallback can
+// still read each app's Info.plist and loose PNGs.
+static NSDictionary<NSString *, NSString *> *XCTScannedBundles(void)
+{
+    static NSDictionary *map;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSMutableDictionary *result = [NSMutableDictionary dictionary];
+        NSString *root = @"/private/var/containers/Bundle/Application";
+        wq_grant(root);
+        NSArray<NSString *> *uuids = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:root error:NULL];
+        for (NSString *uuid in uuids) {
+            NSString *dir = [root stringByAppendingPathComponent:uuid];
+            wq_grant(dir);
+            NSArray<NSString *> *items = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL];
+            for (NSString *item in items) {
+                if (![item.pathExtension.lowercaseString isEqualToString:@"app"]) continue;
+                NSString *app = [dir stringByAppendingPathComponent:item];
+                wq_grant(app);
+                NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:
+                                      [app stringByAppendingPathComponent:@"Info.plist"]];
+                NSString *bid = [info[@"CFBundleIdentifier"] isKindOfClass:NSString.class]
+                    ? info[@"CFBundleIdentifier"] : nil;
+                if (bid.length && !result[bid]) result[bid] = app;
+            }
+        }
+        map = [result copy] ?: @{};
+    });
+    return map;
+}
+
 static NSString *XCTBundlePathForID(NSString *bid)
 {
     if (!bid.length) return nil;
     NSString *path = XCTWorkspaceApps()[bid][@"path"];
-    if (path.length) return path;
-    path = XCTInstalledApps()[bid][@"path"];
-    if (path.length) return path;
-    return wq_bundle_path_for_id(bid);
+    if (path.pathExtension.lowercaseString.length == 0) path = nil;
+    if (!path.length) path = XCTInstalledApps()[bid][@"path"];
+    if (path.pathExtension.lowercaseString.length == 0) path = nil;
+    if (!path.length) path = wq_bundle_path_for_id(bid);
+    if (!path.length) path = XCTScannedBundles()[bid];
+    return path;
 }
 
 NSString *XCTAppBundlePath(NSString *bundleID)
