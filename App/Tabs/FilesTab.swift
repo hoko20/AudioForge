@@ -226,7 +226,7 @@ struct AppCard: View {
 
     var body: some View {
         HStack(spacing: 14) {
-            AppIconView(bundleID: app.id, size: 50)
+            AppIconView(bundleID: app.id, size: 40)
             VStack(alignment: .leading, spacing: 5) {
                 HStack(spacing: 6) {
                     Text(app.name)

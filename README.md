@@ -71,16 +71,16 @@ Resources/              Info.plist、AppGroup.entitlements、图标资源
 
 收藏夹用 `UserDefaults` 持久化，只保存名称与路径，不复制任何目录内容。浏览到深层目录时点星标，之后在「工具」里一键直达。
 
-### 应用图标（iOS 26）
+### 应用图标（对齐 WQFiles）
 
-iOS 26 不再向第三方进程提供其他 App 的图标，只能拿到固定占位图；也没有可读的 `.app` 路径去解析 `Assets.car`。因此图标解析只保留两条系统通道：
+图标链路与上游 `WQUI.m` 的 `wq_app_icon` 一致，顺序为：
 
-| 通道 | 来源 | 说明 |
-|---|---|---|
-| A | UIKit 私有接口 | 遍历 `_applicationIconImageForBundleIdentifier:format:scale:` 的 format，做占位图判定 |
-| B | LaunchServices / IconServices | `LSApplicationProxy` 的 `iconDataForVariant:`、`ISIconCache` 缓存位图 |
+1. UIKit 私有 `_applicationIconImageForBundleIdentifier:format:2:scale:`，用「不存在的 bundle id」占位指纹做比对，接近占位图就丢弃；
+2. `Info.plist` 声明的图标 PNG（`CFBundleIcons` → `CFBundleIconFile` → `AppIcon60x60`/`AppIcon`，依次尝试 `@3x/@2x/@2x~ipad/~ipad/.png`）；
+3. 父 bundle id（扩展回退）；
+4. 中性服务色块：纯色系统色 + 白色 SF Symbol，40 pt、圆角 22.5%、符号 19 pt，关键字规则与上游逐条一致。
 
-两条都拿不到时统一画中性色块占位（`XCTServiceTile`），不再尝试读安装包。系统应用的图标仍由 A/B 正常返回。
+iOS 26 只给第三方进程返回占位图，应用数据库也可能没有 `.app` 路径，此时显示的就是服务色块——与 WQFiles 在该系统上的表现相同。
 
 ### 文件排序
 

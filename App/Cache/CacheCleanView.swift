@@ -164,7 +164,7 @@ struct CacheCleanView: View {
                     DirectoryView(route: PathRoute(path: targetPath, root: targetPath, title: targetTitle))
                 } label: {
                     HStack(spacing: 12) {
-                        AppIconView(bundleID: row.id, size: 38)
+                        AppIconView(bundleID: row.id, size: 40)
 
                         VStack(alignment: .leading, spacing: 3) {
                             Text(row.name)

@@ -15,7 +15,7 @@ struct AppAccessView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 HStack(spacing: 14) {
-                    AppIconView(bundleID: app.id, size: 56)
+                    AppIconView(bundleID: app.id, size: 40)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(app.name)
                             .font(.system(size: 18, weight: .semibold))
