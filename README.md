@@ -36,6 +36,12 @@ App/                   全部源码，一个目录 = 一个功能，功能相关
 ├── Cache/             缓存清理
 │   ├── CacheCleanView.swift            缓存统计与清理界面
 │   └── XCTCacheOps.h/.m                缓存目录统计与清理
+├── Decrypt/           应用砸壳（FairPlay 解密）
+│   ├── DecryptView.swift               应用选择、进度、日志与导出
+│   ├── DecryptModel.swift              列表 / 任务状态
+│   ├── DecryptService.swift            暂存、扫描、解密、去签名、打包
+│   ├── ZipWriter.swift                 zlib deflate 的 ZIP 写入
+│   └── FairPlayCore.h/.c               mremap_encrypted + fairplayd 解密核心
 └── Shared/            全局共用
     ├── Theme.swift                     配色、卡片、按钮样式
     ├── Models.swift                    数据模型与持久化
@@ -59,7 +65,7 @@ Resources/              Info.plist、AppGroup.entitlements、图标资源
 | Tab | 内容 |
 |---|---|
 | **文件** | 应用容器列表（搜索、分类筛选、刷新、停止扫描）→ 逐级目录浏览；任意目录右上角星标可一键收藏 |
-| **工具** | **收藏夹**（添加 / 重命名 / 排序 / 删除 / 复制路径 / 直接跳转）、快速跳转、**音频转换**（mp3/mp4 → amr / aud / m4a）、**缓存清理** |
+| **工具** | **收藏夹**（添加 / 重命名 / 排序 / 删除 / 复制路径 / 直接跳转）、快速跳转、**应用砸壳**（FairPlay 解密已安装 App 并导出 IPA）、**音频转换**（mp3/mp4 → amr / aud / m4a）、**缓存清理** |
 | **设置** | 运行环境（含授权自检、刷新与日志入口）、收藏路径管理、文件排序默认值、完整 inode 扫描、重置访问缓存、重新查找 LaunchServices、清空收藏、签名说明 |
 
 收藏夹用 `UserDefaults` 持久化，只保存名称与路径，不复制任何目录内容。浏览到深层目录时点星标，之后在「工具」里一键直达。
@@ -92,6 +98,16 @@ Resources/              Info.plist、AppGroup.entitlements、图标资源
 ### 目录导航边界
 
 `PathRoute` 携带 `root`（已知取得沙盒扩展的最深路径）。「上级目录」是 **pop**（返回栈里已有的页面），不是 push；仅当父目录仍在 `root` 内才显示。容器根页面与从收藏夹直接打开的页面不会显示上溯入口，因此不会跳到 `/…/Containers/Data/Application` 这类无授权目录，也不会出现无限上溯报错的页面链。只有 `kind == "dir"` 的条目可进入下一级。
+
+## 应用砸壳（FairPlay 解密）
+
+工具 → **应用砸壳**：列出本机已安装应用，点按即可把 `.app` 复制到 App Group 暂存区，逐个 Mach-O 解密，去掉 `_CodeSignature` 后重新打包成 IPA（`Documents/Decrypted`）。
+
+- 核心 `FairPlayCore.c` 移植自 [mengangs/ipadn](https://github.com/mengangs/ipadn)（GPL-2.0-or-later）：`mmap(PROT_READ)` + `mremap_encrypted(cryptid 2)`，由 `fairplayd` 按 `<二进制目录>/SC_Info/<名称>.sinf` 取授权，逐页读回明文并做熵值与 ARM64 指令校验。
+- 只对本机**已安装、已有 FairPlay 授权**的应用有效，不联网、不接触 Apple 账号；系统应用通常无法解密。
+- 暂存目录必须是 App Group（`fairplayd` 拒绝 data container），因此签名必须带 App Group 权限。
+- 导出的是未签名 IPA，需要自行重签（AltStore / SideStore / 证书）后才能安装。
+- `mremap_encrypted` 是系统内部接口，iOS 小版本可能变化；失败时页面会给出完整日志。
 
 ## 与上游 WQ Files 的关系
 

@@ -67,6 +67,34 @@ static NSArray<NSString *> *XCTSamplePaths(NSArray<NSString *> *paths, NSUIntege
 + (NSString *)diagnostics { return wq_log_text() ?: @""; }
 + (NSString * _Nullable)lastError { return gXCTLastError; }
 + (NSData * _Nullable)iconPNGForBundleID:(NSString *)bundleID { return XCTAppIconPNG(bundleID); }
+
++ (NSString * _Nullable)bundlePathForBundleID:(NSString *)bundleID
+{
+    if (!bundleID.length) return nil;
+    NSString *path = wq_bundle_path_for_id(bundleID);
+    if (path.length && [path hasSuffix:@".app"]) return path;
+
+    // LaunchServices proxy fallback (private, but already used for icons).
+    Class proxyClass = NSClassFromString(@"LSApplicationProxy");
+    if (proxyClass) {
+        @try {
+            id proxy = [proxyClass performSelector:@selector(applicationProxyForIdentifier:)
+                                        withObject:bundleID];
+            if ([proxy respondsToSelector:@selector(bundlePath)]) {
+                id raw = [proxy performSelector:@selector(bundlePath)];
+                if ([raw isKindOfClass:NSString.class] && [raw hasSuffix:@".app"]) return raw;
+            }
+            if ([proxy respondsToSelector:@selector(bundleURL)]) {
+                id url = [proxy performSelector:@selector(bundleURL)];
+                if ([url isKindOfClass:NSURL.class]) {
+                    NSString *p = [(NSURL *)url path];
+                    if ([p hasSuffix:@".app"]) return p;
+                }
+            }
+        } @catch (__unused NSException *e) {}
+    }
+    return nil;
+}
 + (void)clearIconCache { XCTClearAppIconCache(); }
 + (BOOL)catalogIconsEnabled { return XCTCatalogIconsEnabled(); }
 + (void)setCatalogIconsEnabled:(BOOL)enabled { XCTSetCatalogIconsEnabled(enabled); }

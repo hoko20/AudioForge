@@ -33,6 +33,11 @@ NS_ASSUME_NONNULL_BEGIN
 // Ask for a sandbox extension covering `path` (and its parent when needed).
 + (BOOL)prepareRead:(NSString *)path NS_SWIFT_NAME(prepareRead(path:));
 
+// Installed .app bundle path for a bundle id (nil when unknown). Used by the
+// decrypt feature: the bundle carries the encrypted Mach-O and its SC_Info.
++ (NSString * _Nullable)bundlePathForBundleID:(NSString *)bundleID
+    NS_SWIFT_NAME(bundlePath(bundleID:));
+
 // List one directory inside a granted container.
 // Each record: name, path, kind (dir/file/link/other), bytes, stat.
 + (NSArray<NSDictionary<NSString *, id> *> *)listDirectory:(NSString *)path NS_SWIFT_NAME(listDirectory(path:));

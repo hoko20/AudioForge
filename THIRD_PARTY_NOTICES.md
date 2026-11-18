@@ -19,6 +19,12 @@
 
 上游其它文件（`WQApps.m`、`WQCache.m`、`WQHealth.m`、`WQUI.m`、编辑器、SQLite、ZIP、UI 等）**未包含**。
 
+## 本机 FairPlay 解密：iPadn
+
+`App/Decrypt/FairPlayCore.h` / `FairPlayCore.c` 移植自 **mengangs/ipadn**（https://github.com/mengangs/ipadn ，GPL-2.0-or-later，2.2.0，2026-11-17），用于对本机已授权的 App Store 应用执行 SINF 解密。机制为 `mmap(PROT_READ)` + `mremap_encrypted(cryptid 2)`，由 `fairplayd` 按 `<二进制目录>/SC_Info/<名称>.sinf` 解析许可；上游文件头注明该机制亦参考 morzelowski/FairPlayed 的公开描述。
+
+`App/Decrypt/DecryptService.swift`、`DecryptModel.swift`、`DecryptView.swift`、`ZipWriter.swift` 是本工程的集成层：把已安装 `.app` 暂存到 App Group、补齐 `SC_Info`、逐文件解密、去签名并打包 IPA。原文件版权说明保留在 `FairPlayCore.c` 头部；本工程整体按 GPL-3.0-or-later 分发，与 GPL-2.0-or-later 的源码兼容。
+
 ## 沙盒技术：worse_query
 
 感谢 **Taj C (forcequit)**，仓库：https://github.com/forcequitOS/worse_query ，GPL-3.0-or-later。通过 `WQAccess.m` 中的 `container_query_*` / `sandbox_extension_consume` 动态解析接入，未捆绑整个 worse_query 仓库。
