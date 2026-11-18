@@ -54,14 +54,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (void)forgetLaunchServicesStore NS_SWIFT_NAME(forgetLaunchServicesStore());
 
 + (NSData * _Nullable)iconPNGForBundleID:(NSString *)bundleID NS_SWIFT_NAME(iconPNG(bundleID:));
-
-// Resolve icons again (ignoring caches) and report which source produced
-// each one. Each row: id, source, detail.
-+ (NSArray<NSDictionary<NSString *, NSString *> *> *)probeIcons:(NSArray<NSString *> *)bundleIDs
-    NS_SWIFT_NAME(probeIcons(_:));
 + (void)clearIconCache NS_SWIFT_NAME(clearIconCache());
-+ (BOOL)catalogIconsEnabled;
-+ (void)setCatalogIconsEnabled:(BOOL)enabled NS_SWIFT_NAME(setCatalogIconsEnabled(_:));
 
 + (NSString *)diagnostics;
 + (NSString * _Nullable)lastError;

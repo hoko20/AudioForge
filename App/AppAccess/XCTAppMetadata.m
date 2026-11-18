@@ -37,7 +37,6 @@
 
 static const CGFloat kXCTIconSide = 48.0;
 static NSString *const kXCTUnknownBundle = @"local.sandboxaccess.no-such-application";
-static NSString *const kXCTCatalogSetting = @"SandboxAccess.catalogIcons.v1";
 
 // MARK: - Safe dynamic invocation of private APIs
 
@@ -162,42 +161,6 @@ static CGFloat XCTIconScale(void)
     return NSThread.isMainThread ? (UIScreen.mainScreen.scale ?: 2.0) : 2.0;
 }
 
-// MARK: - Facts (on-device icon diagnostics)
-
-static NSMutableDictionary<NSString *, NSDictionary<NSString *, NSString *> *> *gXCTFacts;
-static NSLock *gXCTFactsLock;
-static NSUInteger gXCTIconNotes;
-static BOOL gXCTIconVerbose;
-
-static void XCTIconFactInit(void)
-{
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        gXCTFacts = [NSMutableDictionary new];
-        gXCTFactsLock = [NSLock new];
-    });
-}
-
-static void XCTRecordFact(NSString *bid, NSString *source, NSString *detail)
-{
-    XCTIconFactInit();
-    [gXCTFactsLock lock];
-    gXCTFacts[bid] = @{ @"source": source ?: @"?", @"detail": detail ?: @"" };
-    BOOL shouldLog = gXCTIconVerbose || gXCTIconNotes < 12;
-    if (shouldLog) gXCTIconNotes++;
-    [gXCTFactsLock unlock];
-    if (shouldLog) wq_log(@"icon %@ · %@ · %@", bid, source, detail);
-}
-
-NSDictionary<NSString *, NSString *> *XCTIconFact(NSString *bundleID)
-{
-    XCTIconFactInit();
-    [gXCTFactsLock lock];
-    NSDictionary *value = gXCTFacts[bundleID];
-    [gXCTFactsLock unlock];
-    return value;
-}
-
 // MARK: - Disk cache (real icons only)
 
 static NSString *XCTCacheFile(NSString *bid)
@@ -222,7 +185,6 @@ static NSString *XCTCacheFile(NSString *bid)
 
 void XCTClearAppIconCache(void)
 {
-    XCTIconFactInit();
     NSString *dir = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
                      stringByAppendingPathComponent:@"XCTAppIcons-v3"];
     NSArray<NSString *> *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:NULL] ?: @[];
@@ -230,23 +192,7 @@ void XCTClearAppIconCache(void)
         NSString *path = [dir stringByAppendingPathComponent:file];
         [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
     }
-    [gXCTFactsLock lock];
-    [gXCTFacts removeAllObjects];
-    gXCTIconNotes = 0;
-    [gXCTFactsLock unlock];
     wq_log(@"图标缓存已清空（%lu 个文件）", (unsigned long)files.count);
-}
-
-BOOL XCTCatalogIconsEnabled(void)
-{
-    id value = [NSUserDefaults.standardUserDefaults objectForKey:kXCTCatalogSetting];
-    return value ? [value boolValue] : YES;
-}
-
-void XCTSetCatalogIconsEnabled(BOOL enabled)
-{
-    [NSUserDefaults.standardUserDefaults setBool:enabled forKey:kXCTCatalogSetting];
-    wq_log(@"Assets.car 图标解析已%@", enabled ? @"开启" : @"关闭");
 }
 
 // MARK: - Source A: UIKit private API across every format
@@ -341,7 +287,7 @@ static UIImage *XCTUIKitIcon(NSString *bid, NSString **source, NSString **detail
     return nil;
 }
 
-// MARK: - Source B: LaunchServices / IconServices caches
+// MARK: - System icon service
 
 static UIImage *XCTSystemIconData(NSString *bid, NSString **source, NSString **detail)
 {
@@ -524,217 +470,6 @@ static NSString *XCTKnownAppName(NSString *bid)
     return XCTInstalledApps()[bid][@"name"];
 }
 
-static NSOrderedSet<NSString *> *XCTIconNames(NSDictionary *info)
-{    NSMutableOrderedSet<NSString *> *names = [NSMutableOrderedSet new];
-    for (NSString *key in @[@"CFBundleIcons", @"CFBundleIcons~ipad"]) {
-        NSDictionary *icons = [info[key] isKindOfClass:NSDictionary.class] ? info[key] : nil;
-        NSDictionary *primary = [icons[@"CFBundlePrimaryIcon"] isKindOfClass:NSDictionary.class]
-                                ? icons[@"CFBundlePrimaryIcon"] : nil;
-        if (!primary) continue;
-        if ([primary[@"CFBundleIconName"] isKindOfClass:NSString.class]) [names addObject:primary[@"CFBundleIconName"]];
-        NSArray *files = [primary[@"CFBundleIconFiles"] isKindOfClass:NSArray.class] ? primary[@"CFBundleIconFiles"] : @[];
-        for (id file in files.reverseObjectEnumerator) if ([file isKindOfClass:NSString.class]) [names addObject:file];
-    }
-    NSArray *legacy = [info[@"CFBundleIconFiles"] isKindOfClass:NSArray.class] ? info[@"CFBundleIconFiles"] : @[];
-    for (id file in legacy.reverseObjectEnumerator) if ([file isKindOfClass:NSString.class]) [names addObject:file];
-    if ([info[@"CFBundleIconFile"] isKindOfClass:NSString.class]) [names addObject:info[@"CFBundleIconFile"]];
-    [names addObjectsFromArray:@[@"AppIcon", @"AppIcon60x60", @"AppIcon76x76", @"AppIcon~ipad", @"Icon"]];
-    return names;
-}
-
-// MARK: - Source C: CoreUI extraction from Assets.car
-
-static id XCTOpenCatalog(NSString *carPath)
-{
-    static Class catalogClass;
-    static dispatch_once_t once;
-    dispatch_once(&once, ^{
-        catalogClass = NSClassFromString(@"CUICatalog");
-        if (!catalogClass) {
-            const char *paths[] = {
-                "/System/Library/PrivateFrameworks/CoreUI.framework/CoreUI",
-                "/System/Library/PrivateFrameworks/CoreUI.framework/Versions/A/CoreUI",
-                "/System/Library/Frameworks/CoreUI.framework/CoreUI",
-            };
-            for (NSUInteger i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
-                dlopen(paths[i], RTLD_LAZY | RTLD_GLOBAL);
-            }
-            catalogClass = NSClassFromString(@"CUICatalog");
-        }
-    });
-    if (!catalogClass) return nil;
-    NSURL *url = [NSURL fileURLWithPath:carPath];
-    NSArray<NSArray *> *attempts = @[
-        @[@"initWithURL:error:", @[url, NSNull.null]],
-        @[@"initWithURL:", @[url]],
-        @[@"initWithPath:error:", @[carPath, NSNull.null]],
-        @[@"initWithPath:", @[carPath]],
-    ];
-    for (NSArray *attempt in attempts) {
-        id allocated = [catalogClass alloc];
-        id catalog = XCTInvokeObject(allocated, attempt[0], attempt[1]);
-        if (catalog) return catalog;
-    }
-    return nil;
-}
-
-static NSArray<NSString *> *XCTCatalogNames(id catalog)
-{
-    for (NSString *sel in @[@"allImageNames", @"imageNames", @"allRenditionNames", @"allAssetKeys"]) {
-        id value = XCTInvokeObject(catalog, sel, @[]);
-        if (![value isKindOfClass:NSArray.class]) continue;
-        NSMutableArray<NSString *> *names = [NSMutableArray array];
-        for (id item in (NSArray *)value) {
-            if ([item isKindOfClass:NSString.class]) [names addObject:item];
-        }
-        if (names.count) return names;
-    }
-    return @[];
-}
-
-static UIImage *XCTNamedImageToUIImage(id named)
-{
-    if (!named) return nil;
-    for (NSString *sel in @[@"image", @"CGImage", @"cgImage", @"createImage", @"unflattenedImage"]) {
-        XCTInvokeResult result = XCTInvoke(named, sel, @[]);
-        if ([result.object isKindOfClass:UIImage.class]) return result.object;
-        if (result.pointer && CFGetTypeID(result.pointer) == CGImageGetTypeID()) {
-            CGImageRef cg = (CGImageRef)result.pointer;
-            return [UIImage imageWithCGImage:cg scale:2.0 orientation:UIImageOrientationUp];
-        }
-    }
-    return nil;
-}
-
-static UIImage *XCTCatalogIcon(NSString *bid, NSString *bundle, NSOrderedSet<NSString *> *infoNames,
-                               NSString **source, NSString **detail)
-{
-    NSString *car = [bundle stringByAppendingPathComponent:@"Assets.car"];
-    wq_grant(bundle);
-    wq_grant(car);
-    if (![[NSFileManager defaultManager] fileExistsAtPath:car]) {
-        *detail = @".app 内没有 Assets.car";
-        return nil;
-    }
-    id catalog = XCTOpenCatalog(car);
-    if (!catalog) {
-        *detail = @"CoreUI / CUICatalog 不可用";
-        return nil;
-    }
-    NSArray<NSString *> *allNames = XCTCatalogNames(catalog);
-    NSMutableOrderedSet<NSString *> *candidates = [NSMutableOrderedSet new];
-    for (NSString *name in infoNames) if ([allNames containsObject:name]) [candidates addObject:name];
-    for (NSString *name in allNames) {
-        NSString *lower = name.lowercaseString;
-        if ([lower containsString:@"appicon"] || [lower isEqualToString:@"icon"] || [lower hasPrefix:@"icon-"]) {
-            [candidates addObject:name];
-            if (candidates.count >= 12) break;
-        }
-    }
-    for (NSString *name in infoNames) [candidates addObject:name];
-
-    NSArray<NSString *> *selectors = @[@"imageWithName:scaleFactor:",
-                                       @"imageWithName:scaleFactor:deviceIdiom:",
-                                       @"imageWithName:"];
-    for (NSString *name in candidates) {
-        for (NSString *sel in selectors) {
-            for (NSNumber *scale in @[@3.0, @2.0, @1.0]) {
-                NSArray *args;
-                if ([sel isEqualToString:@"imageWithName:"]) args = @[name];
-                else if ([sel hasSuffix:@"deviceIdiom:"]) args = @[name, scale, @0];
-                else args = @[name, scale];
-                id named = XCTInvokeObject(catalog, sel, args);
-                UIImage *image = XCTNamedImageToUIImage(named);
-                if (!XCTIconIsUsable(image)) continue;
-                *source = @"Assets.car";
-                *detail = [NSString stringWithFormat:@"CoreUI %@ · %@（catalog %lu 项）", sel, name,
-                           (unsigned long)allNames.count];
-                return image;
-            }
-        }
-    }
-    *detail = [NSString stringWithFormat:@"Assets.car 可打开（%lu 项），但未找到可渲染的 AppIcon",
-               (unsigned long)allNames.count];
-    return nil;
-}
-
-// MARK: - Source D: loose PNGs in the .app
-
-static UIImage *XCTLoosePNGIcon(NSString *bid, NSString *bundle, NSOrderedSet<NSString *> *names,
-                                NSString **source, NSString **detail)
-{
-    for (NSString *name in names) {
-        NSString *base = name.stringByDeletingPathExtension;
-        if (!base.length || [base containsString:@"/"] || [base containsString:@".."] || base.length > 200) continue;
-        for (NSString *suffix in @[@"@3x.png", @"@2x.png", @"@2x~ipad.png", @"~ipad.png", @".png"]) {
-            NSString *file = [bundle stringByAppendingPathComponent:[base stringByAppendingString:suffix]];
-            NSData *data = XCTReadFile(file, 8 * 1024 * 1024);
-            if (!data) continue;
-            UIImage *image = [UIImage imageWithData:data scale:2.0];
-            if (!XCTIconIsUsable(image)) continue;
-            *source = @"安装包 PNG";
-            *detail = file.lastPathComponent;
-            return image;
-        }
-    }
-    NSArray<NSString *> *files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundle error:NULL];
-    if (!files.count) {
-        wq_grant(bundle);
-        files = [[NSFileManager defaultManager] contentsOfDirectoryAtPath:bundle error:NULL] ?: @[];
-    }
-    NSMutableArray<NSString *> *iconFiles = [NSMutableArray array];
-    for (NSString *file in files) {
-        NSString *lower = file.lowercaseString;
-        if ([lower.pathExtension isEqualToString:@"png"] && [lower containsString:@"icon"]) [iconFiles addObject:file];
-    }
-    [iconFiles sortUsingSelector:@selector(compare:)];
-    for (NSString *file in iconFiles) {
-        NSData *data = XCTReadFile([bundle stringByAppendingPathComponent:file], 8 * 1024 * 1024);
-        if (!data) continue;
-        UIImage *image = [UIImage imageWithData:data scale:2.0];
-        if (!XCTIconIsUsable(image)) continue;
-        *source = @"安装包 PNG";
-        *detail = [NSString stringWithFormat:@"目录扫描命中 %@", file];
-        return image;
-    }
-    *detail = [NSString stringWithFormat:@"%@ 内无可读图标 PNG（%lu 个文件）",
-               bundle.lastPathComponent, (unsigned long)files.count];
-    return nil;
-}
-
-static UIImage *XCTBundleIcon(NSString *bid, NSString **source, NSString **detail)
-{
-    NSString *bundle = XCTBundlePathForID(bid);
-    if (!bundle.length) {
-        *detail = @"LaunchServices 未给出 .app 路径";
-        return nil;
-    }
-    wq_grant(bundle);
-    NSDictionary *info = XCTReadInfo(bundle);
-    if (!info) {
-        *detail = [NSString stringWithFormat:@"无法读取 %@/Info.plist", bundle.lastPathComponent];
-        return nil;
-    }
-    NSString *identifier = info[@"CFBundleIdentifier"];
-    if ([identifier isKindOfClass:NSString.class] && ![identifier isEqualToString:bid] &&
-        ![bid hasPrefix:identifier]) {
-        *detail = [NSString stringWithFormat:@"bundle id 不匹配（%@）", identifier];
-        return nil;
-    }
-    NSOrderedSet<NSString *> *names = XCTIconNames(info);
-    if (XCTCatalogIconsEnabled()) {
-        UIImage *image = XCTCatalogIcon(bid, bundle, names, source, detail);
-        if (image) return image;
-    } else {
-        *detail = @"Assets.car 解析已在设置中关闭";
-    }
-    NSString *catalogReason = [*detail copy];
-    UIImage *loose = XCTLoosePNGIcon(bid, bundle, names, source, detail);
-    if (loose) return loose;
-    *detail = [NSString stringWithFormat:@"%@；%@", catalogReason, *detail];
-    return nil;
-}
-
 // MARK: - Rendering
 
 static UIGraphicsImageRenderer *XCTRenderer(void)
@@ -849,20 +584,16 @@ static NSData *XCTResolveBody(NSString *bid, BOOL force)
     }
 
     NSString *source = @"占位图";
-    NSString *detail = @"所有来源均未返回可用图标";
-    NSString *reasonA = @"", *reasonB = @"", *reasonC = @"";
-    UIImage *raw = nil;
-
-    raw = XCTUIKitIcon(bid, &source, &reasonA);
+    NSString *detail = @"系统没有返回可用图标";
+    NSString *reasonA = @"", *reasonB = @"";
+    UIImage *raw = XCTUIKitIcon(bid, &source, &reasonA);
     if (!raw) {
-        NSString *lsSource = source;
-        raw = XCTSystemIconData(bid, &lsSource, &reasonB);
-        if (raw) source = lsSource;
-    }
-    if (!raw) {
-        NSString *bundleSource = source;
-        raw = XCTBundleIcon(bid, &bundleSource, &reasonC);
-        if (raw) source = bundleSource;
+        NSString *systemSource = source;
+        raw = XCTSystemIconData(bid, &systemSource, &reasonB);
+        if (raw) {
+            source = systemSource;
+            detail = reasonB;
+        }
     }
     if (!raw) {
         NSArray<NSString *> *parts = [bid componentsSeparatedByString:@"."];
@@ -876,21 +607,17 @@ static NSData *XCTResolveBody(NSString *bid, BOOL force)
             }
         }
     }
+    if (raw && [source hasPrefix:@"UIKit"]) detail = reasonA;
+    if (raw && ([source isEqualToString:@"LaunchServices"] || [source isEqualToString:@"IconServices"])) detail = reasonB;
+    if (!raw) detail = [NSString stringWithFormat:@"A:%@ | B:%@", reasonA, reasonB];
 
-    BOOL real = raw != nil;
-    if (real && [source hasPrefix:@"UIKit"]) detail = reasonA;
-    else if (real && ([source isEqualToString:@"LaunchServices"] || [source isEqualToString:@"IconServices"])) detail = reasonB;
-    else if (real && ([source isEqualToString:@"Assets.car"] || [source isEqualToString:@"安装包 PNG"])) detail = reasonC;
-    else if (!real) detail = [NSString stringWithFormat:@"A:%@ | B:%@ | C:%@", reasonA, reasonB, reasonC];
-
-    UIImage *icon = real ? XCTRoundIcon(raw) : XCTServiceTile(bid);
+    UIImage *icon = raw ? XCTRoundIcon(raw) : XCTServiceTile(bid);
     NSData *png = UIImagePNGRepresentation(icon);
     if (png) {
         [memory setObject:png forKey:bid];
-        if (real) [png writeToFile:file atomically:YES];
+        if (raw) [png writeToFile:file atomically:YES];
         else [[NSFileManager defaultManager] removeItemAtPath:file error:NULL];
     }
-    XCTRecordFact(bid, source, detail);
     return png;
 }
 
@@ -910,15 +637,7 @@ NSData *XCTAppIconPNG(NSString *bundleID)
 
 NSData *XCTAppIconPNGForce(NSString *bundleID)
 {
-    XCTIconFactInit();
-    [gXCTFactsLock lock];
-    gXCTIconVerbose = YES;
-    [gXCTFactsLock unlock];
-    NSData *png = XCTResolve(bundleID, YES);
-    [gXCTFactsLock lock];
-    gXCTIconVerbose = NO;
-    [gXCTFactsLock unlock];
-    return png;
+    return XCTResolve(bundleID, YES);
 }
 
 void XCTWarmAppIcons(NSArray<NSString *> *bundleIDs)

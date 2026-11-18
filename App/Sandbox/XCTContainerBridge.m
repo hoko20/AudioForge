@@ -98,24 +98,6 @@ static NSArray<NSString *> *XCTSamplePaths(NSArray<NSString *> *paths, NSUIntege
     return nil;
 }
 + (void)clearIconCache { XCTClearAppIconCache(); }
-+ (BOOL)catalogIconsEnabled { return XCTCatalogIconsEnabled(); }
-+ (void)setCatalogIconsEnabled:(BOOL)enabled { XCTSetCatalogIconsEnabled(enabled); }
-
-+ (NSArray<NSDictionary<NSString *, NSString *> *> *)probeIcons:(NSArray<NSString *> *)bundleIDs
-{
-    NSMutableArray<NSDictionary<NSString *, NSString *> *> *rows = [NSMutableArray array];
-    for (NSString *bid in bundleIDs) {
-        if (!bid.length) continue;
-        @autoreleasepool {
-            (void)XCTAppIconPNGForce(bid);
-            NSDictionary<NSString *, NSString *> *fact = XCTIconFact(bid) ?: @{};
-            [rows addObject:@{ @"id": bid,
-                               @"source": fact[@"source"] ?: @"未知",
-                               @"detail": fact[@"detail"] ?: @"" }];
-        }
-    }
-    return rows;
-}
 
 + (NSString *)systemVersion
 {

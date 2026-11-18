@@ -70,21 +70,16 @@ Resources/              Info.plist、AppGroup.entitlements、图标资源
 
 收藏夹用 `UserDefaults` 持久化，只保存名称与路径，不复制任何目录内容。浏览到深层目录时点星标，之后在「工具」里一键直达。
 
-### 应用图标（iOS 26 真实图标）
+### 应用图标（iOS 26）
 
-上游 `WQUI.m` 的注释直接点明根因：**iOS 26 拒绝第三方进程的 UIKit 图标请求**，私有 `_applicationIconImageForBundleIdentifier:format:scale:` 只返回固定占位图；上游兜底只找 `.app` 里散落的 PNG，而现代应用的图标都编译进 `Assets.car`，所以两者都失败、列表全是灰色 tile。
+iOS 26 不再向第三方进程提供其他 App 的图标，只能拿到固定占位图；也没有可读的 `.app` 路径去解析 `Assets.car`。因此图标解析只保留两条系统通道：
 
-`App/AppAccess/XCTAppMetadata.m` 在上游链路之外补了四层，逐层回退：
-
-| 层 | 来源 | 说明 |
+| 通道 | 来源 | 说明 |
 |---|---|---|
-| A | UIKit 私有接口 | 遍历 format 0..8；用 Safari / 设置 / 相机 / 不存在的 id 四个探针判定「该 format 是否恒返回同一张占位图」，恒定的直接丢弃 |
-| B | LaunchServices / IconServices | `LSApplicationProxy` 的 `iconDataForVariant:`、`ISIconCache` 的缓存位图 |
-| C | **Assets.car** | `dlopen` CoreUI → `CUICatalog` 打开 `.app/Assets.car` → 按 `CFBundleIconName` 及 catalog 内 `AppIcon*` 名字取 `CUINamedImage` 的 `CGImageRef` |
-| D | 安装包 PNG | 除固定名字外再枚举 `.app` 目录下所有含 icon 的 PNG |
-| E | 父 bundle id / 中性 tile | 扩展回退到主应用，最后才是灰底符号 |
+| A | UIKit 私有接口 | 遍历 `_applicationIconImageForBundleIdentifier:format:scale:` 的 format，做占位图判定 |
+| B | LaunchServices / IconServices | `LSApplicationProxy` 的 `iconDataForVariant:`、`ISIconCache` 缓存位图 |
 
-所有私有调用都经过 `respondsToSelector` + `NSInvocation` + `@try/@catch`，候选位图要做尺寸与颜色方差校验，占位图不会被当成真实图标。真实图标落磁盘缓存（只缓存真实图标，不缓存 tile），Swift 侧用串行后台队列 + `NSCache` 按需加载，避免图标授权挤占容器 token。设置里可关闭 Assets.car 解析；「工具 → 重新解析前 12 个应用图标」会绕过缓存逐层探测并在界面上直接列出每个应用的命中来源，原始日志里有 A/B/C 三层的失败原因。
+两条都拿不到时统一画中性色块占位（`XCTServiceTile`），不再尝试读安装包。系统应用的图标仍由 A/B 正常返回。
 
 ### 文件排序
 
