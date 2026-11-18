@@ -2,13 +2,61 @@
 
 只保留「获取应用容器 + 沙盒访问」的最小 iOS 应用，底层直接采用 **kolbicz/WQFiles 0.9.5** 的实现（worse_query，无需越狱）。界面是浅灰白底 + 白色圆角卡片 + 悬浮胶囊 tab 栏的 SwiftUI 壳，不使用系统蓝色强调色。
 
+## 目录结构
+
+```
+App/
+├── Entry/        入口与骨架
+│   ├── SandboxApp.swift         @main，窗口与 Tab 容器
+│   └── ContentView.swift        悬浮胶囊 Tab 栏
+├── Tabs/         三个一级页面
+│   ├── FilesTab.swift           文件：应用容器列表
+│   ├── ToolsTab.swift           工具：收藏夹 + 各工具入口
+│   └── SettingsTab.swift        设置：运行环境 / 数据 / 关于
+├── Files/        文件浏览与容器相关
+│   ├── FileView.swift           根目录文件浏览
+│   ├── DirectoryView.swift      任意目录浏览（排序 / 收藏 / 手势）
+│   ├── DirectoryPickerSheet.swift  目录选择器
+│   ├── AppAccessView.swift      应用沙盒访问
+│   ├── AppIconView.swift        应用真实图标加载与缓存
+│   ├── ReplaceFileView.swift    替换文件工具界面
+│   └── ReplaceFileModel.swift   替换文件的状态与校验逻辑
+├── Tools/        独立工具
+│   ├── AudioConvertView.swift   mp3/mp4 → amr / aud / m4a 转换
+│   ├── AudioPlayerSheet.swift   音频试听
+│   └── CacheCleanView.swift     应用缓存清理
+└── Shared/       全局共享
+    ├── Theme.swift              配色、卡片、按钮样式
+    ├── Models.swift             数据模型与持久化
+    └── NavigationEnhancements.swift  右滑返回与导航修复
+
+AudioConverter/   音频编解码（ObjC）
+├── AudioConverter.m/.h          解码 → AMR / SILK / AAC 编码
+└── AudioPlayback.m/.h           SILK / AMR 解码后交给系统播放
+
+ContainerAccess/  沙盒与系统桥接（ObjC）
+├── BridgingHeader.h             暴露给 Swift 的头文件总入口
+├── XCTFileOps.m/.h              跨沙盒文件读写、目录列举
+├── XCTContainerBridge.m/.h      容器发现、token 授权、日志
+├── XCTAppMetadata.m/.h          应用名、图标、分类等元数据
+└── XCTCacheOps.m/.h             缓存目录统计与清理
+
+Vendor/
+├── WQFiles/       上游沙盒扩展源码（编译进 App）
+├── include/、lib/ 构建时由 Scripts/build-audio-codecs.sh 生成
+└── ...
+
+Scripts/           CI 与构建脚本
+Resources/         Info.plist、entitlements、图标资源
+```
+
 ## 界面
 
 | Tab | 内容 |
 |---|---|
-| **文件** | 应用容器列表（搜索、刷新、停止扫描、原始日志）→ 逐级目录浏览；任意目录右上角星标可一键收藏 |
-| **工具** | **收藏夹**（添加 / 重命名 / 排序 / 删除 / 复制路径 / 直接跳转）、快速跳转、授权自检、**图标来源诊断**、原始日志 |
-| **设置** | App Group 与系统信息、**应用图标开关与缓存**、**文件排序默认值**、完整 inode 扫描开关、重置访问缓存、重新查找 LaunchServices 数据库、清空收藏、日志复制、签名说明 |
+| **文件** | 应用容器列表（搜索、分类筛选、刷新、停止扫描）→ 逐级目录浏览；任意目录右上角星标可一键收藏 |
+| **工具** | **收藏夹**（添加 / 重命名 / 排序 / 删除 / 复制路径 / 直接跳转）、快速跳转、**音频转换**（mp3/mp4 → amr / aud / m4a）、**缓存清理** |
+| **设置** | 运行环境（含授权自检、刷新与日志入口）、收藏路径管理、文件排序默认值、完整 inode 扫描、重置访问缓存、重新查找 LaunchServices、清空收藏、签名说明 |
 
 收藏夹用 `UserDefaults` 持久化，只保存名称与路径，不复制任何目录内容。浏览到深层目录时点星标，之后在「工具」里一键直达。
 
@@ -34,7 +82,7 @@
 
 ### 导航与手势
 
-- **左边缘右滑返回**：隐藏系统返回按钮会让 SwiftUI 禁用 `interactivePopGestureRecognizer`。`App/NavigationEnhancements.swift` 用一个零尺寸的 `UIViewControllerRepresentable` 重新挂上 delegate（仅在 `viewControllers.count > 1` 时允许开始，避免根页面半弹出卡死），并在每次导航更新后校验 delegate 未被 SwiftUI 重置。
+- **左边缘右滑返回**：隐藏系统返回按钮会让 SwiftUI 禁用 `interactivePopGestureRecognizer`。`App/Shared/NavigationEnhancements.swift` 用一个零尺寸的 `UIViewControllerRepresentable` 重新挂上 delegate（仅在 `viewControllers.count > 1` 时允许开始，避免根页面半弹出卡死），并在每次导航更新后校验 delegate 未被 SwiftUI 重置。
 - **毛玻璃导航栏**：三个 tab 与目录页统一用 `.ultraThinMaterial` 工具栏背景 + inline 标题，标题显示当前 tab 名称（文件 / 工具 / 设置）或当前目录名。内容从下方滚过时会透出模糊效果。
 
 ### 目录导航边界
