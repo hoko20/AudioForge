@@ -1,36 +1,23 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
-/// 「应用砸壳」：选择本机已安装应用 → FairPlay 解密 → 导出 IPA。
+/// 「应用砸壳」：导入未解密的 IPA → FairPlay 解密 → 导出 IPA。
 /// 只对本机已有授权的应用有效，不联网、不接触 Apple 账号。
 struct DecryptView: View {
     @StateObject private var model = DecryptModel()
-    @State private var query = ""
     @State private var shareItem: ShareItem?
     @State private var showLogs = false
+    @State private var showPicker = false
 
     private struct ShareItem: Identifiable {
         let id = UUID()
         let url: URL
     }
 
-    private var filteredApps: [DecryptAppRef] {
-        let text = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return model.apps }
-        return model.apps.filter {
-            $0.name.localizedCaseInsensitiveContains(text) ||
-            $0.id.localizedCaseInsensitiveContains(text)
-        }
-    }
-
     var body: some View {
         List {
             Section {
                 statusCard.cardRow()
-            }
-
-            Section {
-                SearchCapsule(text: $query, prompt: "搜索应用名称或 Bundle ID")
-                    .cardRow()
             }
 
             if let errorText = model.errorText {
@@ -45,31 +32,8 @@ struct DecryptView: View {
             }
 
             Section {
-                if model.loading && model.apps.isEmpty {
-                    loadingRow
-                } else if filteredApps.isEmpty {
-                    emptyAppsRow
-                } else {
-                    ForEach(filteredApps) { app in
-                        appRow(app)
-                    }
-                }
-            } header: {
-                HStack(alignment: .firstTextBaseline) {
-                    SectionLabel(text: "已安装应用")
-                    Spacer()
-                    Text(model.running ? "砸壳进行中" : "点按开始砸壳")
-                        .font(.system(size: 11))
-                        .foregroundStyle(Palette.tertiary)
-                }
-                .textCase(nil)
-                .padding(.horizontal, 20)
-                .padding(.top, 6)
-            }
-
-            Section {
                 if model.outputs.isEmpty {
-                    Text("还没有解密产物。完成后会出现在这里，可分享或删除。")
+                    Text("还没有解密产物。导入 IPA 完成后会出现在这里，可分享或删除。")
                         .font(.system(size: 12))
                         .foregroundStyle(Palette.tertiary)
                         .cardRow(top: 4, bottom: 12)
@@ -92,7 +56,7 @@ struct DecryptView: View {
             }
 
             Section {
-                Text("原理：把 .app 复制到 App Group，逐个 Mach-O 通过 mremap_encrypted 交给 fairplayd 解密，去掉 _CodeSignature 后重新打包。只对本机已安装、已有 FairPlay 授权的应用有效；系统应用通常无法解密。产物需自行重签后安装。")
+                Text("流程：把导入的 IPA 解包到 App Group → 逐个 Mach-O 通过 mremap_encrypted 交给 fairplayd 解密 → 去掉 _CodeSignature → 重新打包。只支持未加密的原始 IPA（含 SC_Info 授权），已砸壳的包会直接跳过；产物未签名，需要自行重签后安装。")
                     .font(.system(size: 12))
                     .foregroundStyle(Palette.tertiary)
                     .cardRow(top: 10, bottom: 16)
@@ -109,15 +73,18 @@ struct DecryptView: View {
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 0)
         .background(Palette.background)
-        .refreshable {
-            model.loadApps()
-            model.loadOutputs()
-        }
+        .refreshable { model.loadOutputs() }
         .enableInteractivePop()
         .glassNavigationBar(title: "应用砸壳")
-        .onAppear { model.loadAppsIfNeeded() }
+        .onAppear { model.loadOutputs() }
         .sheet(item: $shareItem) { item in
             ShareSheet(items: [item.url])
+        }
+        .sheet(isPresented: $showPicker) {
+            IPAPicker { url in
+                showPicker = false
+                if let url { model.start(ipaURL: url) }
+            }
         }
     }
 
@@ -138,7 +105,7 @@ struct DecryptView: View {
                     .frame(width: 38, height: 38)
 
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(model.currentApp?.name ?? "应用砸壳")
+                        Text(model.currentName ?? "应用砸壳")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(Palette.ink)
                             .lineLimit(1)
@@ -175,12 +142,12 @@ struct DecryptView: View {
                             .font(.system(size: 12, design: .monospaced))
                             .foregroundStyle(Palette.secondary)
                     }
-                } else if let result = model.lastResult {
+                } else {
                     HStack(spacing: 10) {
                         Button {
-                            shareItem = ShareItem(url: result.url)
+                            showPicker = true
                         } label: {
-                            Label("分享 IPA", systemImage: "square.and.arrow.up")
+                            Label("导入 IPA", systemImage: "square.and.arrow.down")
                                 .font(.system(size: 13, weight: .semibold))
                                 .foregroundStyle(Palette.ink)
                                 .padding(.horizontal, 14)
@@ -188,21 +155,12 @@ struct DecryptView: View {
                                 .background(Palette.placeholder, in: Capsule())
                         }
                         .buttonStyle(.plain)
-                        Spacer()
-                        Text("\(result.sizeText) · \(result.dateText)")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Palette.tertiary)
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("选择一个已安装应用，解密主程序、框架与扩展并导出 IPA。")
-                            .font(.system(size: 12))
-                            .foregroundStyle(Palette.secondary)
-                        HStack(spacing: 10) {
+
+                        if let result = model.lastResult {
                             Button {
-                                model.runProbe()
+                                shareItem = ShareItem(url: result.url)
                             } label: {
-                                Label("读包自检", systemImage: "stethoscope")
+                                Label("分享", systemImage: "square.and.arrow.up")
                                     .font(.system(size: 13, weight: .semibold))
                                     .foregroundStyle(Palette.ink)
                                     .padding(.horizontal, 14)
@@ -210,12 +168,17 @@ struct DecryptView: View {
                                     .background(Palette.placeholder, in: Capsule())
                             }
                             .buttonStyle(.plain)
-                            .disabled(!model.canStart)
-                            if model.probing {
-                                ProgressView().controlSize(.small).tint(Palette.ink)
-                            }
+                        }
+                        Spacer()
+                        if let result = model.lastResult {
+                            Text("\(result.sizeText) · \(result.dateText)")
+                                .font(.system(size: 12))
+                                .foregroundStyle(Palette.tertiary)
                         }
                     }
+                    Text("选择未解密的 IPA 文件开始。支持 iPhone / iPad 应用包。")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Palette.secondary)
                 }
 
                 if !model.logs.isEmpty {
@@ -242,41 +205,6 @@ struct DecryptView: View {
                 }
             }
         }
-    }
-
-    // MARK: - 应用行
-
-    @ViewBuilder
-    private func appRow(_ app: DecryptAppRef) -> some View {
-        Button {
-            model.start(app)
-        } label: {
-            HStack(spacing: 12) {
-                AppIconView(bundleID: app.id, size: 40)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(app.name)
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(Palette.ink)
-                        .lineLimit(1)
-                    Text(app.id)
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundStyle(Palette.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 6)
-                Image(systemName: model.running ? "hourglass" : "chevron.right")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(Palette.tertiary)
-            }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!model.canStart)
-        .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
-        .listRowBackground(Palette.card)
-        .listRowSeparator(SwiftUI.Visibility.visible)
     }
 
     // MARK: - 输出行
@@ -326,35 +254,41 @@ struct DecryptView: View {
             }
         }
     }
+}
 
-    private var loadingRow: some View {
-        HStack(spacing: 10) {
-            ProgressView().tint(Palette.ink)
-            Text("正在读取应用列表…")
-                .font(.system(size: 13))
-                .foregroundStyle(Palette.secondary)
+// MARK: - IPA 文件选择
+
+private struct IPAPicker: UIViewControllerRepresentable {
+    let onPick: (URL?) -> Void
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        var types: [UTType] = [.zip]
+        if let ipa = UTType(filenameExtension: "ipa") {
+            types.insert(ipa, at: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 18)
-        .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
-        .listRowBackground(Palette.card)
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        picker.allowsMultipleSelection = false
+        picker.delegate = context.coordinator
+        return picker
     }
 
-    private var emptyAppsRow: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: 22, weight: .light))
-                .foregroundStyle(Palette.tertiary)
-            Text(query.isEmpty ? "没有可访问的应用，请先在「文件」页刷新容器列表。" : "没有匹配的应用")
-                .font(.system(size: 13))
-                .foregroundStyle(Palette.secondary)
-                .multilineTextAlignment(.center)
+    func updateUIViewController(_ uiViewController: UIDocumentPickerViewController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let parent: IPAPicker
+
+        init(_ parent: IPAPicker) { self.parent = parent }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController,
+                            didPickDocumentsAt urls: [URL]) {
+            parent.onPick(urls.first)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 26)
-        .padding(.horizontal, 16)
-        .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 12))
-        .listRowBackground(Palette.card)
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            parent.onPick(nil)
+        }
     }
 }
 

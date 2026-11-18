@@ -117,7 +117,7 @@ struct ToolsTab: View {
                                     Text("应用砸壳")
                                         .font(.system(size: 15, weight: .medium))
                                         .foregroundStyle(Palette.ink)
-                                    Text("解密已安装 App 并导出 IPA（FairPlay）")
+                                    Text("导入未解密的 IPA 并导出（FairPlay）")
                                         .font(.system(size: 12))
                                         .foregroundStyle(Palette.secondary)
                                         .lineLimit(1)

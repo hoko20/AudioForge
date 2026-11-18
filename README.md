@@ -37,9 +37,10 @@ App/                   全部源码，一个目录 = 一个功能，功能相关
 │   ├── CacheCleanView.swift            缓存统计与清理界面
 │   └── XCTCacheOps.h/.m                缓存目录统计与清理
 ├── Decrypt/           应用砸壳（FairPlay 解密）
-│   ├── DecryptView.swift               应用选择、进度、日志与导出
-│   ├── DecryptModel.swift              列表 / 任务状态
-│   ├── DecryptService.swift            暂存、扫描、解密、去签名、打包
+│   ├── DecryptView.swift               导入 IPA、进度、日志与导出
+│   ├── DecryptModel.swift              任务状态与产物列表
+│   ├── DecryptService.swift            解包、扫描、解密、去签名、打包
+│   ├── ZipReader.swift                 zlib inflate 的 ZIP 解包
 │   ├── ZipWriter.swift                 zlib deflate 的 ZIP 写入
 │   └── FairPlayCore.h/.c               mremap_encrypted + fairplayd 解密核心
 └── Shared/            全局共用
@@ -96,13 +97,13 @@ iOS 26 不再向第三方进程提供其他 App 的图标，只能拿到固定�
 
 ## 应用砸壳（FairPlay 解密）
 
-工具 → **应用砸壳**：列出本机已安装应用，点按即可把 `.app` 复制到 App Group 暂存区，逐个 Mach-O 解密，去掉 `_CodeSignature` 后重新打包成 IPA（`Documents/Decrypted`）。
+工具 → **应用砸壳** → **导入 IPA**：选择一个未解密的原始 IPA，解包到 App Group 暂存区，逐个 Mach-O 解密，去掉 `_CodeSignature` 后重新打包成 IPA（`Documents/Decrypted`）。
 
 - 核心 `FairPlayCore.c` 移植自 [mengangs/ipadn](https://github.com/mengangs/ipadn)（GPL-2.0-or-later）：`mmap(PROT_READ)` + `mremap_encrypted(cryptid 2)`，由 `fairplayd` 按 `<二进制目录>/SC_Info/<名称>.sinf` 取授权，逐页读回明文并做熵值与 ARM64 指令校验。
-- 只对本机**已安装、已有 FairPlay 授权**的应用有效，不联网、不接触 Apple 账号；系统应用通常无法解密。
+- 只处理带 FairPlay 授权的未解密 IPA；已解密的包会直接跳过，系统应用无法解密。
 - 暂存目录必须是 App Group（`fairplayd` 拒绝 data container），因此签名必须带 App Group 权限。
 - 导出的是未签名 IPA，需要自行重签（AltStore / SideStore / 证书）后才能安装。
-- `mremap_encrypted` 是系统内部接口，iOS 小版本可能变化；失败时页面会给出完整日志。
+- ZIP 解包/打包都是工程内的最小实现（zlib inflate/deflate），不引入第三方依赖。
 
 ## 与上游 WQ Files 的关系
 

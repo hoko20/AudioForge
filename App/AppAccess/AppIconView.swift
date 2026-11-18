@@ -58,7 +58,7 @@ struct AppIconView: View {
     var body: some View {
         ZStack {
             RoundedRectangle(cornerRadius: size * 0.225, style: .continuous)
-                .fill(LinearGradient(colors: tileColors, startPoint: .top, endPoint: .bottom))
+                .fill(Color(uiColor: .systemGray))
             if let image {
                 Image(uiImage: image)
                     .resizable()
@@ -66,8 +66,8 @@ struct AppIconView: View {
                     .frame(width: size, height: size)
                     .clipShape(RoundedRectangle(cornerRadius: size * 0.225, style: .continuous))
             } else {
-                Image(systemName: "app.fill")
-                    .font(.system(size: size * 0.40, weight: .medium))
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: size * 0.475, weight: .semibold))
                     .foregroundStyle(.white)
             }
         }
@@ -79,21 +79,5 @@ struct AppIconView: View {
             }
             image = await IconCache.shared.image(for: bundleID)
         }
-    }
-
-    /// Deterministic per-app colour so a not-yet-resolved icon still reads as
-    /// a distinct app tile instead of a flat grey square.
-    private var tileColors: [Color] {
-        var hash: UInt64 = 1469598103934665603
-        for byte in bundleID.utf8 {
-            hash ^= UInt64(byte)
-            hash = hash &* 1099511628211
-        }
-        let hue = Double(hash % 360) / 360.0
-        let hue2 = (hue + 0.07).truncatingRemainder(dividingBy: 1.0)
-        return [
-            Color(hue: hue, saturation: 0.52, brightness: 0.95),
-            Color(hue: hue2, saturation: 0.66, brightness: 0.78)
-        ]
     }
 }

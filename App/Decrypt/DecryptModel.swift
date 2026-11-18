@@ -1,7 +1,6 @@
 import Foundation
-import UIKit
 
-/// 「应用砸壳」页的状态：应用列表、单次解密进度、日志与输出文件。
+/// 「应用砸壳」页的状态：导入 IPA、单次解密进度、日志与输出文件。
 final class DecryptModel: ObservableObject {
 
     struct OutputIPA: Identifiable, Equatable {
@@ -18,64 +17,32 @@ final class DecryptModel: ObservableObject {
         }
     }
 
-    @Published var apps: [DecryptAppRef] = []
     @Published var outputs: [OutputIPA] = []
-    @Published var loading = false
     @Published var running = false
-    @Published var probing = false
     @Published var progress: Double = 0
     @Published var status = "就绪"
     @Published var errorText: String?
     @Published var notice: String?
     @Published var logs: [String] = []
     @Published var elapsedText = ""
-    @Published var currentApp: DecryptAppRef?
+    @Published var currentName: String?
     @Published var lastResult: OutputIPA?
 
     private let queue = DispatchQueue(label: "wqtool.decrypt", qos: .userInitiated)
-    private var hasLoadedApps = false
 
-    var canStart: Bool { !running && !loading && !probing }
+    var canStart: Bool { !running }
 
-    // MARK: - 应用列表
+    // MARK: - 导入并开始
 
-    func loadAppsIfNeeded() {
-        loadOutputs()
-        guard !hasLoadedApps else { return }
-        loadApps()
-    }
-
-    func loadApps() {
-        guard !loading, !running else { return }
-        hasLoadedApps = true
-        loading = true
-        status = "正在读取已安装应用…"
-        queue.async {
-            let rows = XCTContainerBridge.applications(refresh: false)
-            let list = rows.compactMap { row -> DecryptAppRef? in
-                guard let id = row["id"], !id.isEmpty else { return nil }
-                let name = row["name"]?.isEmpty == false ? row["name"]! : id
-                return DecryptAppRef(id: id, name: name)
-            }
-            .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-            DispatchQueue.main.async {
-                self.apps = list
-                self.loading = false
-                self.status = list.isEmpty ? "没有可访问的应用" : "\(list.count) 个应用"
-            }
-        }
-    }
-
-    // MARK: - 开始砸壳
-
-    func start(_ app: DecryptAppRef) {
+    func start(ipaURL: URL) {
         guard canStart else { return }
         guard !DecryptService.shared.isRunning else {
             errorText = DecryptError.busy.localizedDescription
             return
         }
 
-        currentApp = app
+        let scoped = ipaURL.startAccessingSecurityScopedResource()
+        currentName = ipaURL.lastPathComponent
         running = true
         progress = 0
         logs = []
@@ -83,25 +50,16 @@ final class DecryptModel: ObservableObject {
         notice = nil
         lastResult = nil
         elapsedText = ""
-        status = "定位应用包…"
+        status = "准备中…"
         let started = Date()
 
         queue.async {
-            guard let path = XCTContainerBridge.bundlePath(bundleID: app.id) else {
-                DispatchQueue.main.async {
-                    self.running = false
-                    self.status = "未开始"
-                    self.errorText = "找不到 \(app.name) 的应用包路径"
-                }
-                return
+            defer {
+                if scoped { ipaURL.stopAccessingSecurityScopedResource() }
             }
-            self.append("应用：\(app.name)（\(app.id)）")
-            self.append("Bundle：\(path)")
-
             do {
                 let outcome = try DecryptService.shared.decrypt(
-                    bundlePath: path,
-                    appName: app.name,
+                    ipaURL: ipaURL,
                     progress: { fraction, text in
                         DispatchQueue.main.async {
                             self.progress = max(0, min(fraction, 1))
@@ -138,37 +96,6 @@ final class DecryptModel: ObservableObject {
     func cancel() {
         DecryptService.shared.cancel()
         status = "正在取消…"
-    }
-
-    // MARK: - 读包自检
-
-    /// 抽样前 5 个应用，检查 bundle 路径、目录读取、Info.plist / Assets.car /
-    /// SC_Info 与主程序加密状态，判断 worse_query 是否真的能读安装包。
-    func runProbe() {
-        guard canStart, !apps.isEmpty else { return }
-        probing = true
-        errorText = nil
-        notice = nil
-        logs = []
-        status = "读包自检…"
-        let sample = Array(apps.prefix(5))
-        queue.async {
-            var lines: [String] = ["=== 读包自检（前 \(sample.count) 个应用）==="]
-            for app in sample {
-                guard let path = XCTContainerBridge.bundlePath(bundleID: app.id) else {
-                    lines.append("▸ \(app.name)（\(app.id)）")
-                    lines.append("  路径：未找到（LaunchServices 无记录）")
-                    continue
-                }
-                lines.append(contentsOf: DecryptService.probe(bundlePath: path, name: app.name))
-            }
-            DispatchQueue.main.async {
-                self.probing = false
-                self.logs = lines
-                self.status = "自检完成"
-                self.notice = "读包自检结果已写入日志，展开查看"
-            }
-        }
     }
 
     // MARK: - 输出文件

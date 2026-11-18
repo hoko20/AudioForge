@@ -1,11 +1,5 @@
 import Foundation
 
-/// 一个可砸壳的已安装应用（列表展示用）。
-struct DecryptAppRef: Identifiable, Hashable {
-    let id: String
-    let name: String
-}
-
 /// 一次砸壳的结果。
 struct DecryptOutcome {
     let ipaURL: URL
@@ -19,8 +13,7 @@ enum DecryptError: LocalizedError {
     case busy
     case cancelled
     case noAppGroup
-    case bundleNotFound(String)
-    case copyFailed(String)
+    case invalidIPA(String)
     case noPayload
     case noSpace(Int64, Int64)
     case packFailed(String)
@@ -31,9 +24,8 @@ enum DecryptError: LocalizedError {
         case .cancelled: return "已取消"
         case .noAppGroup:
             return "没有可用的 App Group：fairplayd 只接受 App Group 容器，请确认签名带 App Group 权限"
-        case .bundleNotFound(let id): return "找不到应用包：\(id)"
-        case .copyFailed(let path): return "复制应用包失败：\(path)"
-        case .noPayload: return "复制后的应用包里没有 .app"
+        case .invalidIPA(let detail): return "IPA 无法读取：\(detail)"
+        case .noPayload: return "IPA 里没有 Payload/*.app"
         case .noSpace(let free, let needed):
             return "空间不足：可用 \(free) 字节，需要 \(needed) 字节"
         case .packFailed(let detail): return "打包 IPA 失败：\(detail)"
@@ -41,7 +33,7 @@ enum DecryptError: LocalizedError {
     }
 }
 
-/// 本机 FairPlay 砸壳：把已安装 App 的 .app 复制到 App Group，
+/// 本机 FairPlay 砸壳：导入一个未解密的 IPA，解包到 App Group，
 /// 逐个 Mach-O 调用 FairPlayCore（mremap_encrypted + fairplayd），
 /// 去掉 _CodeSignature 后重新打包成 IPA。
 ///
@@ -77,8 +69,7 @@ final class DecryptService {
 
     // MARK: - 主流程
 
-    func decrypt(bundlePath: String,
-                 appName: String,
+    func decrypt(ipaURL: URL,
                  progress: @escaping (Double, String) -> Void,
                  log: @escaping (String) -> Void) throws -> DecryptOutcome {
 
@@ -105,40 +96,50 @@ final class DecryptService {
         try manager.createDirectory(at: work, withIntermediateDirectories: true)
         defer { try? manager.removeItem(at: work) }
 
-        // 1. 读取原应用包（需要沙盒扩展）。
-        log("应用包：\(bundlePath)")
-        _ = XCTContainerBridge.prepareRead(path: bundlePath)
-        var isDirectory: ObjCBool = false
-        guard manager.fileExists(atPath: bundlePath, isDirectory: &isDirectory), isDirectory.boolValue else {
-            throw DecryptError.bundleNotFound(bundlePath)
+        log("IPA：\(ipaURL.lastPathComponent)")
+
+        // 1. 读取 zip 目录。
+        let reader: ZipReader
+        do {
+            reader = try ZipReader(url: ipaURL)
+        } catch {
+            throw DecryptError.invalidIPA(error.localizedDescription)
         }
+        log("解包：\(reader.entries.count) 个条目 · \(Self.bytesText(Int64(reader.uncompressedBytes)))")
 
-        let folderName = (bundlePath as NSString).lastPathComponent
-        let payload = work.appendingPathComponent("Payload", isDirectory: true)
-        let stagedApp = payload.appendingPathComponent(folderName, isDirectory: true)
-        try manager.createDirectory(at: payload, withIntermediateDirectories: true)
-
-        // 2. 空间检查。
-        let sourceBytes = Self.treeSize(bundlePath)
         let free = Self.freeSpace(at: stagingRoot)
-        if free > 0 && free < sourceBytes * 2 {
-            throw DecryptError.noSpace(free, sourceBytes * 2)
+        let needed = Int64(reader.uncompressedBytes) + 64 * 1024 * 1024
+        if free > 0 && free < needed {
+            throw DecryptError.noSpace(free, needed)
         }
 
-        // 3. 复制到 App Group 暂存区（fairplayd 只认 App Group 路径）。
-        progress(0.03, "复制应用包…")
-        log("暂存目录：\(work.path)")
-        try copyTree(from: bundlePath, to: stagedApp,
-                     totalBytes: sourceBytes) { done in
-            let fraction = sourceBytes > 0 ? Double(done) / Double(sourceBytes) : 1
-            progress(0.03 + fraction * 0.27, "复制应用包 \(Int(fraction * 100))%")
+        // 2. 解包到 App Group 暂存区（fairplayd 只认 App Group 路径）。
+        progress(0.02, "解包 IPA…")
+        let extractRoot = work.appendingPathComponent("ipa", isDirectory: true)
+        do {
+            try reader.extractAll(to: extractRoot,
+                                  checkCancelled: { [weak self] in self?.isCancelled ?? false },
+                                  progress: { written in
+                let total = max(reader.uncompressedBytes, 1)
+                let fraction = min(Double(written) / Double(total), 1)
+                progress(0.02 + fraction * 0.33, "解包 IPA \(Int(fraction * 100))%")
+            })
+        } catch let zipError as ZipReader.ZipError {
+            if case .cancelled = zipError { throw DecryptError.cancelled }
+            throw DecryptError.invalidIPA(zipError.localizedDescription)
         }
         try checkCancelled()
-        log("复制完成：\(Self.bytesText(sourceBytes))")
+
+        // 3. 找到 Payload 里的 .app。
+        guard let appURL = Self.firstApp(in: extractRoot) else {
+            throw DecryptError.noPayload
+        }
+        let appName = appURL.deletingPathExtension().lastPathComponent
+        log("应用包：\(appURL.lastPathComponent)")
 
         // 4. 扫描 Mach-O。
-        progress(0.32, "扫描可执行文件…")
-        let binaries = scanMachO(in: stagedApp)
+        progress(0.36, "扫描可执行文件…")
+        let binaries = scanMachO(in: appURL)
         let encrypted = binaries.filter { $0.encrypted }
         log("Mach-O：\(binaries.count) 个，其中加密 \(encrypted.count) 个")
         guard !binaries.isEmpty else {
@@ -147,18 +148,16 @@ final class DecryptService {
 
         // 5. 逐个解密。
         var decryptedCount = 0
-        var failedCount = 0
         var processed = 0
         for binary in encrypted {
             try checkCancelled()
             let name = binary.url.lastPathComponent
-            progress(0.35 + 0.4 * Double(processed) / Double(max(encrypted.count, 1)),
+            progress(0.36 + 0.4 * Double(processed) / Double(max(encrypted.count, 1)),
                      "解密 \(name)")
             log("解密 \(name) …")
 
-            guard ensureSINF(for: binary.url, appRoot: stagedApp, log: log) else {
+            guard ensureSINF(for: binary.url, appRoot: appURL, log: log) else {
                 log("  [失败] 缺少 SC_Info/\(name).sinf")
-                failedCount += 1
                 processed += 1
                 continue
             }
@@ -174,7 +173,6 @@ final class DecryptService {
             } else if result == 1 {
                 log("  [跳过] \(name) 未加密")
             } else {
-                failedCount += 1
                 log("  [失败] \(name)")
             }
             processed += 1
@@ -183,10 +181,10 @@ final class DecryptService {
 
         // 6. 去签名。
         progress(0.78, "移除旧签名…")
-        removeCodeSignatures(in: stagedApp, log: log)
+        removeCodeSignatures(in: appURL, log: log)
 
         // 7. 校验 cryptid。
-        let remaining = scanMachO(in: stagedApp).filter { $0.encrypted }.count
+        let remaining = scanMachO(in: appURL).filter { $0.encrypted }.count
         if remaining > 0 {
             log("仍有 \(remaining) 个加密 Mach-O（可能缺少对应 SC_Info）")
         }
@@ -195,16 +193,15 @@ final class DecryptService {
         progress(0.82, "打包 IPA…")
         let outputDirectory = Self.decryptedDirectory()
         try manager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
-        let outputURL = Self.uniqueOutputURL(in: outputDirectory,
-                                             name: "\(appName)-decrypted")
-        let total = Self.treeSize(stagedApp.path)
+        let outputURL = Self.uniqueOutputURL(in: outputDirectory, name: "\(appName)-decrypted")
+        let total = Self.treeSize(appURL.path)
         var written: Int64 = 0
         do {
             let writer = try ZipWriter(url: outputURL, checkCancelled: { [weak self] in
                 self?.isCancelled ?? false
             })
-            try addDirectoryTree(stagedApp, relativeTo: stagedApp,
-                                 zipPrefix: "Payload/\(folderName)",
+            try addDirectoryTree(appURL, relativeTo: appURL,
+                                 zipPrefix: "Payload/\(appURL.lastPathComponent)",
                                  writer: writer, totalBytes: total,
                                  written: &written) { fraction in
                 progress(0.82 + fraction * 0.16, "打包 IPA \(Int(fraction * 100))%")
@@ -230,7 +227,7 @@ final class DecryptService {
                               elapsed: Date().timeIntervalSince(started))
     }
 
-    // MARK: - 暂存目录
+    // MARK: - 目录
 
     static func groupContainer() -> URL? {
         guard let group = XCTContainerBridge.appGroup(), !group.isEmpty else { return nil }
@@ -240,70 +237,6 @@ final class DecryptService {
     static func decryptedDirectory() -> URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Decrypted", isDirectory: true)
-    }
-
-    /// 读包自检：确认 worse_query 拿到的 token 是否真的能读目标 .app。
-    /// 结果用于判断「图标纯色 / 砸壳失败」是权限问题还是解析问题。
-    static func probe(bundlePath: String, name: String) -> [String] {
-        let manager = FileManager.default
-        var lines: [String] = []
-        lines.append("▸ \(name)")
-        lines.append("  路径：\(bundlePath)")
-
-        let granted = XCTContainerBridge.prepareRead(path: bundlePath)
-        lines.append("  prepareRead：\(granted ? "成功" : "失败")")
-
-        var isDirectory: ObjCBool = false
-        let exists = manager.fileExists(atPath: bundlePath, isDirectory: &isDirectory)
-        lines.append("  存在：\(exists ? "是" : "否")，目录：\(isDirectory.boolValue ? "是" : "否")")
-
-        var names: [String] = []
-        if let items = try? manager.contentsOfDirectory(atPath: bundlePath) {
-            names = items
-            lines.append("  目录可读：\(items.count) 项")
-        } else {
-            lines.append("  目录不可读（沙盒拒绝或权限不足）")
-        }
-        lines.append("  Info.plist：\(names.contains("Info.plist") ? "在" : "缺") · Assets.car：\(names.contains("Assets.car") ? "在" : "缺")")
-
-        let infoPath = bundlePath + "/Info.plist"
-        if let data = try? Data(contentsOf: URL(fileURLWithPath: infoPath)), !data.isEmpty {
-            lines.append("  Info.plist 读取：\(data.count) 字节")
-        } else {
-            lines.append("  Info.plist 读取：失败")
-        }
-
-        let carPath = bundlePath + "/Assets.car"
-        if let attributes = try? manager.attributesOfItem(atPath: carPath),
-           let size = attributes[.size] as? NSNumber {
-            lines.append("  Assets.car 读取：\(size.int64Value) 字节")
-        } else {
-            lines.append("  Assets.car 读取：失败")
-        }
-
-        let sinfDirectory = bundlePath + "/SC_Info"
-        if let items = try? manager.contentsOfDirectory(atPath: sinfDirectory) {
-            let count = items.filter { $0.lowercased().hasSuffix(".sinf") }.count
-            lines.append("  SC_Info：\(count) 个 .sinf")
-        } else {
-            lines.append("  SC_Info：不可读")
-        }
-
-        var executable: String? = Bundle(path: bundlePath)?.executablePath
-        if executable == nil {
-            let stem = ((bundlePath as NSString).lastPathComponent as NSString).deletingPathExtension
-            let candidate = bundlePath + "/" + stem
-            if manager.fileExists(atPath: candidate) { executable = candidate }
-        }
-        if let executable {
-            let readable = (try? FileHandle(forReadingFrom: URL(fileURLWithPath: executable))) != nil
-            let slices = parseSlices(executable)
-            let encrypted = slices.filter { $0.has_enc && $0.cryptid != 0 }.count
-            lines.append("  主程序：\(readable ? "可打开" : "打不开")，切片 \(slices.count)，加密 \(encrypted)")
-        } else {
-            lines.append("  主程序：未找到")
-        }
-        return lines
     }
 
     private static func uniqueOutputURL(in directory: URL, name: String) -> URL {
@@ -317,57 +250,38 @@ final class DecryptService {
         return candidate
     }
 
+    private static func firstApp(in root: URL) -> URL? {
+        let payload = root.appendingPathComponent("Payload", isDirectory: true)
+        if let items = try? FileManager.default.contentsOfDirectory(
+            at: payload,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) {
+            if let app = items.first(where: { $0.pathExtension.lowercased() == "app" }) {
+                return app
+            }
+        }
+        // 有些 IPA 不按标准放 Payload，递归找第一个 .app。
+        guard let walker = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles],
+            errorHandler: { _, _ in true }
+        ) else { return nil }
+        while let item = walker.nextObject() as? URL {
+            if item.pathExtension.lowercased() == "app" {
+                walker.skipDescendants()
+                return item
+            }
+        }
+        return nil
+    }
+
     private func checkCancelled() throws {
         if isCancelled { throw DecryptError.cancelled }
     }
 
-    // MARK: - 文件复制 / 体积
-
-    private func copyTree(from source: String, to destination: URL,
-                          totalBytes: Int64,
-                          progress: (Int64) -> Void) throws {
-        let manager = FileManager.default
-        let sourceURL = URL(fileURLWithPath: source)
-        try manager.createDirectory(at: destination, withIntermediateDirectories: true)
-        var copied: Int64 = 0
-
-        guard let walker = manager.enumerator(at: sourceURL,
-                                              includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
-                                              options: [],
-                                              errorHandler: { _, _ in true }) else {
-            throw DecryptError.copyFailed(source)
-        }
-        while let item = walker.nextObject() as? URL {
-            try checkCancelled()
-            let relative = item.path.replacingOccurrences(of: source + "/", with: "")
-            let target = destination.appendingPathComponent(relative)
-            let values = try? item.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey])
-            if values?.isDirectory == true {
-                try? manager.createDirectory(at: target, withIntermediateDirectories: true)
-                continue
-            }
-            if values?.isSymbolicLink == true {
-                if manager.fileExists(atPath: target.path) { try? manager.removeItem(at: target) }
-                if let link = try? manager.destinationOfSymbolicLink(atPath: item.path) {
-                    try? manager.createSymbolicLink(atPath: target.path, withDestinationPath: link)
-                }
-                continue
-            }
-            if manager.fileExists(atPath: target.path) { try? manager.removeItem(at: target) }
-            if (try? manager.copyItem(at: item, to: target)) == nil {
-                // 子路径仍被沙盒拒绝时，对具体路径补一次 extension 再重试。
-                _ = XCTContainerBridge.prepareRead(path: item.path)
-                guard (try? manager.copyItem(at: item, to: target)) != nil else {
-                    throw DecryptError.copyFailed(relative)
-                }
-            }
-            if let size = (try? item.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
-                copied += Int64(size)
-                progress(copied)
-            }
-        }
-        if copied == 0 { progress(totalBytes) }
-    }
+    // MARK: - 体积
 
     static func treeSize(_ path: String) -> Int64 {
         let manager = FileManager.default

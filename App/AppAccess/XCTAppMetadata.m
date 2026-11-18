@@ -494,71 +494,105 @@ static UIImage *XCTRoundIcon(UIImage *raw)
     }];
 }
 
-static NSString *XCTTileSymbol(NSString *bid)
+// Symbol + colour rules, same table as WQ Files' wq_service_tile.
+static NSDictionary *XCTTileRule(NSString *bid)
 {
-    NSString *key = bid.lowercaseString;
-    static NSArray<NSArray<NSString *> *> *rules;
+    static NSArray<NSArray *> *rules;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        UIColor *blue = UIColor.systemBlueColor, *green = UIColor.systemGreenColor,
+                *red = UIColor.systemRedColor, *orange = UIColor.systemOrangeColor,
+                *purple = UIColor.systemPurpleColor, *indigo = UIColor.systemIndigoColor,
+                *teal = UIColor.systemTealColor, *pink = UIColor.systemPinkColor,
+                *gray = UIColor.systemGrayColor;
         rules = @[
-            @[@"camera", @"camera.fill"],      @[@"photo", @"photo.fill"],
-            @[@"map", @"map.fill"],            @[@"weather", @"cloud.sun.fill"],
-            @[@"music", @"music.note"],        @[@"video", @"play.rectangle.fill"],
-            @[@"game", @"gamecontroller.fill"], @[@"book", @"book.fill"],
-            @[@"mail", @"envelope.fill"],      @[@"message", @"message.fill"],
-            @[@"xin", @"message.fill"],        @[@"phone", @"phone.fill"],
-            @[@"health", @"heart.fill"],       @[@"wallet", @"creditcard.fill"],
-            @[@"safari", @"safari.fill"],      @[@"note", @"note.text"],
-            @[@"calendar", @"calendar"],       @[@"cloud", @"cloud.fill"],
-            @[@"keyboard", @"keyboard.fill"],  @[@"widget", @"square.grid.2x2.fill"],
-            @[@"setting", @"gearshape.fill"],  @[@"store", @"bag.fill"],
+            @[@[@"emoji"], @"face.smiling.inverse", orange],
+            @[@[@"keyboard", @"inputui", @"textinput", @"dictation"], @"keyboard.fill", gray],
+            @[@[@"airdrop", @"sharing", @"sharesheet"], @"antenna.radiowaves.left.and.right", blue],
+            @[@[@"widget", @"chrono"], @"square.grid.2x2.fill", blue],
+            @[@[@"screenshot", @"screencapture", @"screenrecord"], @"camera.viewfinder", indigo],
+            @[@[@"poster", @"wallpaper"], @"photo.on.rectangle.angled", purple],
+            @[@[@"siri", @"assistant"], @"waveform", indigo],
+            @[@[@"camera"], @"camera.fill", gray],
+            @[@[@"photo"], @"photo.fill", orange],
+            @[@[@"music", @"audio", @"shazam", @"musicrecognition"], @"music.note", pink],
+            @[@[@"headphone", @"airpods", @"bluetooth"], @"headphones", gray],
+            @[@[@"hearing"], @"ear.fill", blue],
+            @[@[@"weather"], @"cloud.sun.fill", teal],
+            @[@[@"location", @"maps", @"navigation"], @"location.fill", blue],
+            @[@[@"health", @"fitness", @"workout"], @"heart.fill", red],
+            @[@[@"pay", @"wallet", @"passbook", @"cash", @"finance"], @"creditcard.fill", green],
+            @[@[@"mail"], @"envelope.fill", blue],
+            @[@[@"message", @"sms", @"imessage"], @"message.fill", green],
+            @[@[@"facetime", @"video"], @"video.fill", green],
+            @[@[@"phone", @"call", @"telephony"], @"phone.fill", green],
+            @[@[@"notification", @"usernotification", @"bulletin"], @"bell.fill", red],
+            @[@[@"shortcut", @"workflow", @"intent"], @"square.on.square", indigo],
+            @[@[@"safari", @"web"], @"safari.fill", blue],
+            @[@[@"news", @"stocks"], @"newspaper.fill", red],
+            @[@[@"calendar", @"event"], @"calendar", red],
+            @[@[@"note", @"paper"], @"note.text", orange],
+            @[@[@"reminder"], @"checklist", blue],
+            @[@[@"game"], @"gamecontroller.fill", purple],
+            @[@[@"auth", @"account", @"appsso", @"password", @"keychain", @"tcc", @"privacy"], @"lock.fill", gray],
+            @[@[@"print"], @"printer.fill", gray],
+            @[@[@"clarity", @"accessib"], @"accessibility", blue],
+            @[@[@"home"], @"house.fill", orange],
+            @[@[@"findmy", @"fmd", @"fmip"], @"location.circle.fill", green],
+            @[@[@"carplay", @"carradio", @"cartrip", @"car."], @"car.fill", gray],
+            @[@[@"tvremote", @"tvsetup", @"com.apple.tv"], @"tv.fill", gray],
+            @[@[@"book"], @"book.fill", orange],
+            @[@[@"podcast"], @"mic.fill", purple],
+            @[@[@"spotlight", @"search"], @"magnifyingglass", gray],
+            @[@[@"diagnostic", @"logging", @"crash", @"analytics"], @"stethoscope", gray],
+            @[@[@"font"], @"textformat", gray],
+            @[@[@"translate"], @"character.bubble.fill", blue],
+            @[@[@"file", @"document", @"cloud"], @"folder.fill", blue],
+            @[@[@"setup", @"buddy", @"onboarding"], @"gearshape.2.fill", gray],
         ];
     });
-    for (NSArray<NSString *> *rule in rules) {
-        if ([key containsString:rule[0]]) return rule[1];
+    NSString *key = bid.lowercaseString;
+    for (NSArray *rule in rules) {
+        for (NSString *word in rule[0]) {
+            if ([key containsString:word]) {
+                return @{ @"symbol": rule[1], @"color": rule[2] };
+            }
+        }
     }
-    return @"app.fill";
+    return @{ @"symbol": @"gearshape.fill", @"color": UIColor.systemGrayColor };
 }
 
 static UIImage *XCTServiceTile(NSString *bid)
 {
-    // A hash-derived hue makes every placeholder visually distinct, and a
-    // saturated gradient guarantees contrast against the white list cards.
-    // The previous near-white tile looked like "no icon" on a white background.
-    uint64_t hash = 1469598103934665603ULL;
-    const char *utf = bid.UTF8String ?: "";
-    for (size_t i = 0; utf[i]; i++) {
-        hash ^= (uint8_t)utf[i];
-        hash *= 1099511628211ULL;
-    }
-    CGFloat hue = (CGFloat)(hash % 360ULL) / 360.0;
-    UIColor *top = [UIColor colorWithHue:hue saturation:0.52 brightness:0.95 alpha:1.0];
-    UIColor *bottom = [UIColor colorWithHue:fmod(hue + 0.07, 1.0) saturation:0.66 brightness:0.78 alpha:1.0];
+    static NSCache *tiles;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ tiles = [NSCache new]; });
+    NSDictionary *rule = XCTTileRule(bid);
+    NSString *symbolName = rule[@"symbol"];
+    UIColor *color = rule[@"color"];
+    NSString *cacheKey = [symbolName stringByAppendingString:color.description];
+    UIImage *cached = [tiles objectForKey:cacheKey];
+    if (cached) return cached;
 
-    return [XCTRenderer() imageWithActions:^(UIGraphicsImageRendererContext *ctx) {
-        [XCTIconPath() addClip];
-        CGColorSpaceRef space = CGColorSpaceCreateDeviceRGB();
-        NSArray *colors = @[(__bridge id)top.CGColor, (__bridge id)bottom.CGColor];
-        CGGradientRef gradient = CGGradientCreateWithColors(space, (__bridge CFArrayRef)colors, NULL);
-        if (gradient) {
-            CGContextDrawLinearGradient(ctx.CGContext, gradient,
-                                        CGPointMake(0, 0),
-                                        CGPointMake(0, kXCTIconSide),
-                                        kCGGradientDrawsBeforeStartLocation | kCGGradientDrawsAfterEndLocation);
-            CGGradientRelease(gradient);
-        }
-        CGColorSpaceRelease(space);
-
-        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:22
-                                                                                         weight:UIImageSymbolWeightSemibold];
-        UIImage *symbol = [[UIImage systemImageNamed:XCTTileSymbol(bid) withConfiguration:config] ?:
-                           [UIImage systemImageNamed:@"app.fill" withConfiguration:config]
-                           imageWithTintColor:[UIColor whiteColor]
-                           renderingMode:UIImageRenderingModeAlwaysOriginal];
-        CGFloat s = kXCTIconSide;
-        [symbol drawInRect:CGRectMake((s - symbol.size.width) / 2, (s - symbol.size.height) / 2,
-                                     symbol.size.width, symbol.size.height)];
+    const CGFloat s = 40;
+    UIColor *fill = [color resolvedColorWithTraitCollection:
+                     [UITraitCollection traitCollectionWithUserInterfaceStyle:UIUserInterfaceStyleLight]];
+    UIGraphicsImageRenderer *renderer = [[UIGraphicsImageRenderer alloc]
+        initWithSize:CGSizeMake(s, s)];
+    UIImage *tile = [renderer imageWithActions:^(UIGraphicsImageRendererContext *__unused ctx) {
+        [fill setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:CGRectMake(0, 0, s, s) cornerRadius:s * 0.225] fill];
+        UIImageSymbolConfiguration *config = [UIImageSymbolConfiguration configurationWithPointSize:19
+                                                                                             weight:UIImageSymbolWeightSemibold];
+        UIImage *glyph = [[UIImage systemImageNamed:symbolName withConfiguration:config] ?:
+                          [UIImage systemImageNamed:@"gearshape.fill" withConfiguration:config]
+                          imageWithTintColor:UIColor.whiteColor
+                          renderingMode:UIImageRenderingModeAlwaysOriginal];
+        [glyph drawInRect:CGRectMake((s - glyph.size.width) / 2, (s - glyph.size.height) / 2,
+                                     glyph.size.width, glyph.size.height)];
     }];
+    [tiles setObject:tile forKey:cacheKey];
+    return tile;
 }
 
 // MARK: - Public resolution
