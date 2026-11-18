@@ -194,9 +194,28 @@ struct DecryptView: View {
                             .foregroundStyle(Palette.tertiary)
                     }
                 } else {
-                    Text("选择一个已安装应用，解密主程序、框架与扩展并导出 IPA。")
-                        .font(.system(size: 12))
-                        .foregroundStyle(Palette.secondary)
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("选择一个已安装应用，解密主程序、框架与扩展并导出 IPA。")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Palette.secondary)
+                        HStack(spacing: 10) {
+                            Button {
+                                model.runProbe()
+                            } label: {
+                                Label("读包自检", systemImage: "stethoscope")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Palette.ink)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 8)
+                                    .background(Palette.placeholder, in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!model.canStart)
+                            if model.probing {
+                                ProgressView().controlSize(.small).tint(Palette.ink)
+                            }
+                        }
+                    }
                 }
 
                 if !model.logs.isEmpty {

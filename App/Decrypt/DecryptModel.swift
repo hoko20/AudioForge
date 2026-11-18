@@ -22,6 +22,7 @@ final class DecryptModel: ObservableObject {
     @Published var outputs: [OutputIPA] = []
     @Published var loading = false
     @Published var running = false
+    @Published var probing = false
     @Published var progress: Double = 0
     @Published var status = "就绪"
     @Published var errorText: String?
@@ -34,7 +35,7 @@ final class DecryptModel: ObservableObject {
     private let queue = DispatchQueue(label: "wqtool.decrypt", qos: .userInitiated)
     private var hasLoadedApps = false
 
-    var canStart: Bool { !running && !loading }
+    var canStart: Bool { !running && !loading && !probing }
 
     // MARK: - 应用列表
 
@@ -137,6 +138,37 @@ final class DecryptModel: ObservableObject {
     func cancel() {
         DecryptService.shared.cancel()
         status = "正在取消…"
+    }
+
+    // MARK: - 读包自检
+
+    /// 抽样前 5 个应用，检查 bundle 路径、目录读取、Info.plist / Assets.car /
+    /// SC_Info 与主程序加密状态，判断 worse_query 是否真的能读安装包。
+    func runProbe() {
+        guard canStart, !apps.isEmpty else { return }
+        probing = true
+        errorText = nil
+        notice = nil
+        logs = []
+        status = "读包自检…"
+        let sample = Array(apps.prefix(5))
+        queue.async {
+            var lines: [String] = ["=== 读包自检（前 \(sample.count) 个应用）==="]
+            for app in sample {
+                guard let path = XCTContainerBridge.bundlePath(bundleID: app.id) else {
+                    lines.append("▸ \(app.name)（\(app.id)）")
+                    lines.append("  路径：未找到（LaunchServices 无记录）")
+                    continue
+                }
+                lines.append(contentsOf: DecryptService.probe(bundlePath: path, name: app.name))
+            }
+            DispatchQueue.main.async {
+                self.probing = false
+                self.logs = lines
+                self.status = "自检完成"
+                self.notice = "读包自检结果已写入日志，展开查看"
+            }
+        }
     }
 
     // MARK: - 输出文件

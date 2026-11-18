@@ -71,7 +71,9 @@ static NSArray<NSString *> *XCTSamplePaths(NSArray<NSString *> *paths, NSUIntege
 + (NSString * _Nullable)bundlePathForBundleID:(NSString *)bundleID
 {
     if (!bundleID.length) return nil;
-    NSString *path = wq_bundle_path_for_id(bundleID);
+    NSString *path = XCTAppBundlePath(bundleID);
+    if (path.length && [path hasSuffix:@".app"]) return path;
+    path = wq_bundle_path_for_id(bundleID);
     if (path.length && [path hasSuffix:@".app"]) return path;
 
     // LaunchServices proxy fallback (private, but already used for icons).

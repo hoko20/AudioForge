@@ -511,6 +511,11 @@ static NSString *XCTBundlePathForID(NSString *bid)
     return wq_bundle_path_for_id(bid);
 }
 
+NSString *XCTAppBundlePath(NSString *bundleID)
+{
+    return XCTBundlePathForID(bundleID);
+}
+
 static NSString *XCTKnownAppName(NSString *bid)
 {
     if (!bid.length) return nil;

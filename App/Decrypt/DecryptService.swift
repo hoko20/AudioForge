@@ -242,6 +242,70 @@ final class DecryptService {
             .appendingPathComponent("Decrypted", isDirectory: true)
     }
 
+    /// 读包自检：确认 worse_query 拿到的 token 是否真的能读目标 .app。
+    /// 结果用于判断「图标纯色 / 砸壳失败」是权限问题还是解析问题。
+    static func probe(bundlePath: String, name: String) -> [String] {
+        let manager = FileManager.default
+        var lines: [String] = []
+        lines.append("▸ \(name)")
+        lines.append("  路径：\(bundlePath)")
+
+        let granted = XCTContainerBridge.prepareRead(path: bundlePath)
+        lines.append("  prepareRead：\(granted ? "成功" : "失败")")
+
+        var isDirectory: ObjCBool = false
+        let exists = manager.fileExists(atPath: bundlePath, isDirectory: &isDirectory)
+        lines.append("  存在：\(exists ? "是" : "否")，目录：\(isDirectory.boolValue ? "是" : "否")")
+
+        var names: [String] = []
+        if let items = try? manager.contentsOfDirectory(atPath: bundlePath) {
+            names = items
+            lines.append("  目录可读：\(items.count) 项")
+        } else {
+            lines.append("  目录不可读（沙盒拒绝或权限不足）")
+        }
+        lines.append("  Info.plist：\(names.contains("Info.plist") ? "在" : "缺") · Assets.car：\(names.contains("Assets.car") ? "在" : "缺")")
+
+        let infoPath = bundlePath + "/Info.plist"
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: infoPath)), !data.isEmpty {
+            lines.append("  Info.plist 读取：\(data.count) 字节")
+        } else {
+            lines.append("  Info.plist 读取：失败")
+        }
+
+        let carPath = bundlePath + "/Assets.car"
+        if let attributes = try? manager.attributesOfItem(atPath: carPath),
+           let size = attributes[.size] as? NSNumber {
+            lines.append("  Assets.car 读取：\(size.int64Value) 字节")
+        } else {
+            lines.append("  Assets.car 读取：失败")
+        }
+
+        let sinfDirectory = bundlePath + "/SC_Info"
+        if let items = try? manager.contentsOfDirectory(atPath: sinfDirectory) {
+            let count = items.filter { $0.lowercased().hasSuffix(".sinf") }.count
+            lines.append("  SC_Info：\(count) 个 .sinf")
+        } else {
+            lines.append("  SC_Info：不可读")
+        }
+
+        var executable: String? = Bundle(path: bundlePath)?.executablePath
+        if executable == nil {
+            let stem = ((bundlePath as NSString).lastPathComponent as NSString).deletingPathExtension
+            let candidate = bundlePath + "/" + stem
+            if manager.fileExists(atPath: candidate) { executable = candidate }
+        }
+        if let executable {
+            let readable = (try? FileHandle(forReadingFrom: URL(fileURLWithPath: executable))) != nil
+            let slices = parseSlices(executable)
+            let encrypted = slices.filter { $0.has_enc && $0.cryptid != 0 }.count
+            lines.append("  主程序：\(readable ? "可打开" : "打不开")，切片 \(slices.count)，加密 \(encrypted)")
+        } else {
+            lines.append("  主程序：未找到")
+        }
+        return lines
+    }
+
     private static func uniqueOutputURL(in directory: URL, name: String) -> URL {
         let manager = FileManager.default
         var candidate = directory.appendingPathComponent("\(name).ipa")
@@ -290,8 +354,12 @@ final class DecryptService {
                 continue
             }
             if manager.fileExists(atPath: target.path) { try? manager.removeItem(at: target) }
-            guard (try? manager.copyItem(at: item, to: target)) != nil else {
-                throw DecryptError.copyFailed(relative)
+            if (try? manager.copyItem(at: item, to: target)) == nil {
+                // 子路径仍被沙盒拒绝时，对具体路径补一次 extension 再重试。
+                _ = XCTContainerBridge.prepareRead(path: item.path)
+                guard (try? manager.copyItem(at: item, to: target)) != nil else {
+                    throw DecryptError.copyFailed(relative)
+                }
             }
             if let size = (try? item.resourceValues(forKeys: [.fileSizeKey]))?.fileSize {
                 copied += Int64(size)
@@ -356,7 +424,9 @@ final class DecryptService {
         return rows
     }
 
-    private func parseSlices(_ path: String) -> [fp_slice_t] {
+    private func parseSlices(_ path: String) -> [fp_slice_t] { Self.parseSlices(path) }
+
+    private static func parseSlices(_ path: String) -> [fp_slice_t] {
         var buffer = [fp_slice_t](repeating: fp_slice_t(), count: Int(FP_MAX_SLICES))
         var count: Int32 = 0
         var error = [CChar](repeating: 0, count: 256)

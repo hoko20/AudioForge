@@ -34,4 +34,8 @@ NSDictionary<NSString *, NSString *> * _Nullable XCTIconFact(NSString *bundleID)
 // Cached per bundle id for the process.
 NSDictionary<NSString *, NSString *> *XCTAppIdentity(NSString * _Nullable bundleID);
 
+// Installed .app bundle path for a bundle id. Tries LaunchServices workspace,
+// the MobileInstallation map, then the WQ Files database. Nil if unknown.
+NSString * _Nullable XCTAppBundlePath(NSString * _Nullable bundleID);
+
 NS_ASSUME_NONNULL_END
